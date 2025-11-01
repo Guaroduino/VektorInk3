@@ -11,11 +11,13 @@ export class LapizRasterTool {
   private points: { x: number; y: number; pressure?: number }[] = []
   private previewContainer: Container | null = null
   private dabTexture: Texture | null = null
-  private lastDab: { x: number; y: number; pressure?: number } | null = null
+  // Acumuladores para espaciado por distancia (continuo)
+  private lastSample: { x: number; y: number; pressure?: number } | null = null
+  private residualToNext = 0 // distancia restante hasta el próximo dab
 
   // Configuración visual
   private baseAlpha = 0.08 // igual que el final
-  private spacing = 2.0    // px entre dabs
+  private spacing = 2.0    // px entre dabs (espaciado por distancia)
 
   private getDabTexture(): Texture {
     if (this.dabTexture) return this.dabTexture
@@ -41,14 +43,15 @@ export class LapizRasterTool {
     preview.zIndex = 9999
     layer.addChild(preview)
     this.previewContainer = preview
-    this.lastDab = null
+    this.lastSample = null
+    this.residualToNext = 0
   }
 
   update(samples: InputSample[]) {
     // Acumula puntos crudos
     for (const s of samples) this.points.push({ x: s.x, y: s.y, pressure: s.pressure })
 
-    // Dibuja preview como dabs a distancia fija
+    // Dibuja preview con espaciado constante por distancia (acumulado entre segmentos)
     if (!this.previewContainer) return
     const tex = this.getDabTexture()
     const placeDab = (x: number, y: number, pressure?: number) => {
@@ -66,27 +69,42 @@ export class LapizRasterTool {
     }
 
     for (const s of samples) {
-      const prev = this.lastDab ?? s
-      const dx = s.x - prev.x
-      const dy = s.y - prev.y
-      const dist = Math.hypot(dx, dy)
-      if (dist <= this.spacing) {
-        // muy cerca, coloca solo uno y acumula
+      if (!this.lastSample) {
+        // Primer dab
         placeDab(s.x, s.y, s.pressure)
-        this.lastDab = s
+        this.lastSample = { ...s }
+        this.residualToNext = this.spacing
         continue
       }
-      const steps = Math.max(1, Math.floor(dist / this.spacing))
-      for (let i = 1; i <= steps; i++) {
-        const t = i / steps
-        const x = prev.x + dx * t
-        const y = prev.y + dy * t
+      // Recorre el segmento desde el último sample hacia s, colocando dabs cada 'spacing'
+      let prev = this.lastSample
+      let dx = s.x - prev.x
+      let dy = s.y - prev.y
+      let segLen = Math.hypot(dx, dy)
+      if (segLen < 1e-6) {
+        // casi sin movimiento: solo acumula
+        // no modifies residual
+        this.lastSample = { ...s }
+        continue
+      }
+      const ux = dx / segLen
+      const uy = dy / segLen
+      let distToNext = this.residualToNext > 0 ? this.residualToNext : this.spacing
+      let traveled = 0
+      while (segLen - traveled >= distToNext - 1e-6) {
+        const tAbs = (traveled + distToNext) / segLen
+        const x = prev.x + ux * (traveled + distToNext)
+        const y = prev.y + uy * (traveled + distToNext)
         const p0 = prev.pressure ?? 0.5
         const p1 = s.pressure ?? 0.5
-        const pr = p0 + (p1 - p0) * t
+        const pr = p0 + (p1 - p0) * tAbs
         placeDab(x, y, pr)
+        traveled += distToNext
+        distToNext = this.spacing
       }
-      this.lastDab = s
+      // Actualiza residual para el siguiente segmento
+      this.residualToNext = distToNext - (segLen - traveled)
+      this.lastSample = { ...s }
     }
   }
 
@@ -95,38 +113,47 @@ export class LapizRasterTool {
       // Limpia preview
       this.previewContainer?.destroy({ children: true })
       this.previewContainer = null
-      this.lastDab = null
+      this.lastSample = null
+      this.residualToNext = 0
       return null
     }
 
     // Resamplea puntos en dabs a distancia fija para evitar huecos
+    // Resampleo por distancia continuo (incluye residual entre segmentos)
     const dabs: { x: number; y: number; pressure?: number; r: number }[] = []
     const pushDab = (x: number, y: number, pressure?: number) => {
       const r = 2 + (pressure ?? 0.5) * 3
       dabs.push({ x, y, pressure, r })
     }
+    let residual = 0
     let prev = this.points[0]
     pushDab(prev.x, prev.y, prev.pressure)
+    residual = this.spacing
     for (let i = 1; i < this.points.length; i++) {
       const cur = this.points[i]
-      const dx = cur.x - prev.x
-      const dy = cur.y - prev.y
-      const dist = Math.hypot(dx, dy)
-      if (dist <= this.spacing) {
-        pushDab(cur.x, cur.y, cur.pressure)
+      let dx = cur.x - prev.x
+      let dy = cur.y - prev.y
+      let segLen = Math.hypot(dx, dy)
+      if (segLen < 1e-6) {
         prev = cur
         continue
       }
-      const steps = Math.max(1, Math.floor(dist / this.spacing))
-      for (let s = 1; s <= steps; s++) {
-        const t = s / steps
-        const x = prev.x + dx * t
-        const y = prev.y + dy * t
+      const ux = dx / segLen
+      const uy = dy / segLen
+      let distToNext = residual > 0 ? residual : this.spacing
+      let traveled = 0
+      while (segLen - traveled >= distToNext - 1e-6) {
+        const tAbs = (traveled + distToNext) / segLen
+        const x = prev.x + ux * (traveled + distToNext)
+        const y = prev.y + uy * (traveled + distToNext)
         const p0 = prev.pressure ?? 0.5
         const p1 = cur.pressure ?? 0.5
-        const pr = p0 + (p1 - p0) * t
+        const pr = p0 + (p1 - p0) * tAbs
         pushDab(x, y, pr)
+        traveled += distToNext
+        distToNext = this.spacing
       }
+      residual = distToNext - (segLen - traveled)
       prev = cur
     }
 
@@ -166,9 +193,10 @@ export class LapizRasterTool {
 
     const result = { sprite, points: this.points }
     // Limpia preview
-    this.previewContainer?.destroy({ children: true })
-    this.previewContainer = null
-    this.lastDab = null
+  this.previewContainer?.destroy({ children: true })
+  this.previewContainer = null
+  this.lastSample = null
+  this.residualToNext = 0
     this.container = null
     this.points = []
     return result
