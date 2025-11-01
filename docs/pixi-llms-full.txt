@@ -1,0 +1,116 @@
+Source: https://pixijs.com/llms-full.txt
+Fetched: 2025-11-01
+
+---- BEGIN PIXIJS LLM DOC (EXCERPT) ----
+# PixiJS Documentation for LLMs
+[...]
+
+This file is a locally cached excerpt of the PixiJS LLM documentation for quick reference in this repo. For the most up-to-date and complete version, visit the source URL above.
+
+Below are selected sections and highlights retrieved at fetch time:
+
+# PixiJS Documentation for LLMs
+...
+## Ecosystem
+
+PixiJS itself is just a rendering engine. However, there is a foundation of a robust ecosystem of libraries and tools that enhance and expand its capabilities. These tools integrate seamlessly with PixiJS, empowering developers to create richer, more interactive applications with ease.
+
+...
+## Core Ecosystem Libraries
+- DevTools: https://pixijs.io/devtools/
+- React Integration: https://react.pixijs.io/
+- Layout: https://layout.pixijs.io/
+- Spine Integration: https://esotericsoftware.com/spine-pixi
+- Filters: https://github.com/pixijs/filters
+- Sound: https://github.com/pixijs/sound
+- UI: https://github.com/pixijs/ui
+- AssetPack: https://pixijs.io/assetpack/
+
+...
+## Quick Start
+- Try online: PixiJS Playground (/8.x/playground)
+- CLI: npm create pixi.js@latest
+- Bundler templates: Vite + PixiJS recommended
+- Install: npm install pixi.js
+
+Example usage (v8 async init):
+
+```ts
+import { Application, Assets, Container, Sprite } from 'pixi.js';
+
+(async () => {
+  const app = new Application();
+  await app.init({ background: '#1099bb', resizeTo: window });
+  document.body.appendChild(app.canvas);
+
+  const container = new Container();
+  app.stage.addChild(container);
+
+  const texture = await Assets.load('https://pixijs.com/assets/bunny.png');
+  for (let i = 0; i < 25; i++) {
+    const bunny = new Sprite(texture);
+    bunny.x = (i % 5) * 40;
+    bunny.y = Math.floor(i / 5) * 40;
+    container.addChild(bunny);
+  }
+})();
+```
+
+Vite note: Wrap top-level await in an async function for production builds (affects Vite <= 6.0.6).
+
+...
+## Architecture & Extensions
+- Modular extension system; register via `extensions.add(...)`
+- Renderers: WebGL, WebGPU, Canvas
+
+...
+## Using PixiJS in Different Environments
+- Browser default adapter
+- Web Workers with WebWorkerAdapter
+- Custom adapters via DOMAdapter
+
+...
+## Performance Tips
+- Optimize only when needed; batching and order matter
+- Consider `useContextAlpha: false` and `antialias: false` for older devices
+- Enable culling via `cullable = true` or CullerPlugin
+
+...
+## Render Groups & Layers
+- RenderGroups to optimize GPU transforms
+- RenderLayers to decouple visual order from scene graph
+
+...
+## Scene Graph Basics
+- `app.stage` as root; parents/children; render order rules
+
+...
+## Accessibility
+- Opt-in via `import 'pixi.js/accessibility'`
+
+...
+## Color, Events, Filters/Blend Modes, Math, Textures, Ticker
+- Extensive APIs with links to docs
+
+...
+## Mixing PixiJS and Three.js
+- Share GL context; resetState between renders
+
+...
+## v8 Migration Guide
+- Single package `pixi.js`, async initialization, Graphics API changes, etc.
+
+...
+## Assets, Manifests & Bundles, Resolver, SVGs, Renderers
+- Use `Assets` singleton; optional compressed texture loaders (`pixi.js/ktx2`, etc.)
+
+...
+## Graphics & Scene Objects
+- GraphicsContext reuse; performance best practices
+
+...
+## Text systems
+- Text (Canvas), BitmapText, HTMLText; SplitText helpers
+
+...
+---- END PIXIJS LLM DOC (EXCERPT) ----
