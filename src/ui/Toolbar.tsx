@@ -1,40 +1,52 @@
-import React, { useEffect, useState } from 'react'
+import React, { useState } from 'react'
 import { useEngine } from './EngineContext'
-import { Pen, MousePointer2, PenTool, Brush } from 'lucide-react'
+import { Pen, MousePointer2, Brush, Eraser } from 'lucide-react'
+import type { ToolKey } from '../VektorEngine'
 
-type ToolName = 'pluma' | 'vpen' | 'raster' | 'contorno'
+// Mantener los nombres de herramienta en línea con VektorEngine
+type ToolName = ToolKey // 'pluma' | 'vpen' | 'raster' | 'contorno'
 
-const tools: { key: ToolName; label: string; Icon: React.ComponentType<{ className?: string }> }[] = [
-  { key: 'pluma', label: 'Pluma', Icon: Pen },
-  { key: 'vpen', label: 'Vector Pen', Icon: PenTool },
-  { key: 'raster', label: 'Raster', Icon: Brush },
-  { key: 'contorno', label: 'Contorno', Icon: MousePointer2 },
+// Configuración visual de la barra
+const tools: { name: ToolName; icon: React.ReactNode; label: string }[] = [
+  { name: 'pluma', icon: <Pen size={20} />, label: 'Pluma' },
+  { name: 'vpen', icon: <MousePointer2 size={20} />, label: 'Vector' },
+  { name: 'raster', icon: <Brush size={20} />, label: 'Raster' },
+  { name: 'contorno', icon: <Eraser size={20} />, label: 'Contorno' },
 ]
 
 export const Toolbar: React.FC = () => {
   const engine = useEngine()
-  const [active, setActive] = useState<ToolName>('pluma')
+  const [activeTool, setActiveTool] = useState<ToolName>(() => engine.getActiveTool() as ToolName)
 
-  useEffect(() => {
-    const current = engine.getActiveTool() as ToolName
-    if (current) setActive(current)
-  }, [engine])
-
-  const onSelect = (t: ToolName) => {
-    engine.setActiveTool(t)
-    setActive(t)
+  const handleToolClick = (toolName: ToolName) => {
+    engine.setActiveTool(toolName)
+    setActiveTool(toolName)
   }
 
   return (
-    <div className="flex flex-col gap-2 p-2 bg-gray-900/60 rounded-md">
-      {tools.map(({ key, label, Icon }) => (
+    <div
+      className="
+        absolute top-4 left-4 z-10
+        flex flex-col gap-1 p-1.5
+        bg-gray-800 text-white
+        border border-gray-700/50
+        rounded-lg shadow-md
+      "
+    >
+      {tools.map((tool) => (
         <button
-          key={key}
-          onClick={() => onSelect(key)}
-          className={`flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors border border-white/10 hover:bg-white/10 ${active === key ? 'bg-white/15' : 'bg-black/20'}`}
+          key={tool.name}
+          onClick={() => handleToolClick(tool.name)}
+          data-active={activeTool === tool.name}
+          className="
+            p-2 rounded-md text-white/70
+            transition-colors duration-100 ease-in-out
+            hover:bg-gray-700/60 hover:text-white
+            data-[active=true]:bg-blue-600 data-[active=true]:text-white
+          "
+          title={tool.label}
         >
-          <Icon className="h-4 w-4" />
-          <span>{label}</span>
+          {tool.icon}
         </button>
       ))}
     </div>

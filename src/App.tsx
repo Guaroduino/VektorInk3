@@ -1,19 +1,22 @@
 import React from 'react'
 import { EngineProvider } from './ui/EngineContext'
-import { Toolbar } from './ui/Toolbar'
 import { CanvasContainer } from './ui/CanvasContainer'
+import { Toolbar } from './ui/Toolbar'
 
-const App: React.FC = () => {
+function App() {
   return (
     <EngineProvider>
-      <div className="flex h-screen w-screen bg-[#0e1116] text-gray-100">
-        <div className="w-52 border-r border-white/10 bg-black/20 p-2">
-          <Toolbar />
-        </div>
-        <div className="flex-1">
-          <CanvasContainer />
-        </div>
-      </div>
+      {/* Contenedor principal con posicionamiento relativo para paneles flotantes */}
+      <main className="relative w-screen h-screen overflow-hidden text-gray-100">
+        {/* Capa 1: Canvas a pantalla completa */}
+        <CanvasContainer />
+
+        {/* Capa 2: UI flotante */}
+        <Toolbar />
+
+        {/* Futuro: Panel de capas */}
+        {/* <LayerPanel /> */}
+      </main>
     </EngineProvider>
   )
 }

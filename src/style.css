@@ -1,44 +1,36 @@
+/*
+  Reseteo de Tailwind (esto ya debería estar)
+*/
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-html, body, #app {
+/*
+  Reglas Globales para Vektor
+*/
+html,
+body,
+#root {
+  width: 100vw;
+  height: 100vh;
   margin: 0;
   padding: 0;
+  overflow: hidden; /* <-- CLAVE: Elimina las barras de scroll */
+  
+  /* Evita la selección de texto en la UI, pero permite en el canvas */
+  user-select: none;
+
+  /* Fondo oscuro por defecto */
+  background-color: #111;
+}
+
+/*
+  Asegúrate de que el canvas de Pixi llene su contenedor
+  y permita la entrada de puntero.
+*/
+canvas {
   width: 100%;
   height: 100%;
+  display: block;
+  touch-action: none; /* Optimización para eventos de puntero */
 }
-
-body {
-  background: #0e1116;
-  color: #f7f7f7;
-  font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
-}
-
-#hud {
-  position: fixed;
-  left: 12px;
-  bottom: 12px;
-  background: rgba(20, 24, 31, 0.8);
-  color: #eaeaea;
-  border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 8px;
-  padding: 8px 10px;
-  font-size: 13px;
-  backdrop-filter: blur(4px);
-  z-index: 10;
-}
-
-#hud .row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
-#hud .label { opacity: 0.8; }
-#hud .controls button {
-  margin-right: 6px;
-  border: 1px solid rgba(255,255,255,0.15);
-  background: rgba(255,255,255,0.06);
-  color: #fff;
-  border-radius: 6px;
-  padding: 4px 8px;
-  cursor: pointer;
-}
-#hud .controls button:hover { background: rgba(255,255,255,0.12); }
-#hud .hint { opacity: 0.7; font-size: 12px; margin-top: 4px; }
