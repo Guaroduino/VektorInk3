@@ -1,4 +1,4 @@
-import { Application, Container } from 'pixi.js'
+import { Application, Container, Text } from 'pixi.js'
 import { createInputCapture, type InputSample, type PointerPhase } from './input'
 import { LayersManager as LayerManager } from './layers'
 import { PlumaTool } from './tools/pluma'
@@ -20,6 +20,7 @@ export class VektorEngine {
   private removeKeyup?: () => void
   private removeWheel?: () => void
   private removeBeforeUnload?: () => void
+  private mountEl: HTMLElement | null = null
 
   private tools: Record<ToolKey, any>
   private activeToolKey: ToolKey = 'vpen'
@@ -31,8 +32,16 @@ export class VektorEngine {
   private zoom = 1
   private isInitialized = false
   private layerBatches = new WeakMap<Container, LayerBatch>()
+  private supportsUint32Indices: boolean = true
   private history = new HistoryManager(() => this._emitHistoryChange())
   private historyListeners = new Set<() => void>()
+  // fps tracking
+  private fps = 0
+  private fpsListeners = new Set<(fps: number) => void>()
+  private _fpsRafId: number | null = null
+  private _fpsAccumMs = 0
+  private _fpsFrames = 0
+  private _fpsLastMs = 0
 
   // Estilo global configurable
   private strokeColor: number = 0xffffff
@@ -59,6 +68,8 @@ export class VektorEngine {
   // Latency experiment flags
   private lowLatency: boolean = true
   private previewMinMsOverride: number | null = null
+  private currentAA: boolean = false
+  private overlayText: Text | null = null
 
   constructor() {
     // Núcleo Pixi (se termina de inicializar en init())
@@ -94,37 +105,67 @@ export class VektorEngine {
 
   private getOrCreateBatch(layer: Container) {
     let b = this.layerBatches.get(layer)
-    if (!b) { b = new LayerBatch(layer); this.layerBatches.set(layer, b) }
+    if (!b) { b = new LayerBatch(layer, this.supportsUint32Indices); this.layerBatches.set(layer, b) }
     return b
   }
 
   async init(container: HTMLElement) {
     if (this.isInitialized) return
     this.isInitialized = true
+    this.mountEl = container
 
     // Tamaño inicial controlado por el contenedor React (no usar resizeTo)
     const width = container.clientWidth || window.innerWidth
     const height = container.clientHeight || window.innerHeight
 
+    // Read renderer preferences
+    let prefAA = false
+    try { const s = localStorage.getItem('vi.renderer.antialias'); if (s != null) prefAA = s === 'true' } catch {}
+    let prefRes: number | null = null
+    try { const s = localStorage.getItem('vi.renderer.resolution'); if (s != null) prefRes = Math.max(0.5, Math.min(4, parseFloat(s))) } catch {}
+
     await this.app.init({
       width,
       height,
       backgroundColor: this.backgroundColor as any,
-      // Preferir el camino de menor latencia: sin MSAA y menor resolución por defecto
-      antialias: false,
-      // En móviles con dpr alto, fijar a 1 reduce significativamente la latencia gráfica
-      resolution: 1,
+      // MSAA toggleable via preference (requires renderer re-init to change later)
+      antialias: prefAA,
+      // Resolution: use preference if present, otherwise 1 (presets may change it after init)
+      resolution: prefRes ?? 1,
       // Sugerir hacer uso de la GPU de alto rendimiento cuando sea posible
       powerPreference: 'high-performance' as any,
       // Evitar costos extra de preservación de buffer si el renderer lo respeta
       preserveDrawingBuffer: false as any,
     })
+    this.currentAA = !!prefAA
+
+    // Detect 32-bit index support (avoid geometry glitches on some mobile GPUs)
+    try {
+      const gl: WebGLRenderingContext | WebGL2RenderingContext | undefined = (this.app.renderer as any).gl
+      this.supportsUint32Indices = !!(gl && ('OES_element_index_uint' in (gl as any).extensions || gl.getExtension('OES_element_index_uint')))
+    } catch {
+      this.supportsUint32Indices = true
+    }
 
     // Asegurar jerarquía
     if (!this.world.parent) this.app.stage.addChild(this.world)
 
     // Montar canvas
     container.appendChild(this.app.canvas)
+    // Create overlay watermark (Scale/MSAA) and start FPS loop
+    try {
+      if (!this.overlayText) {
+        this.overlayText = new Text({
+          text: '',
+          style: { fill: 0xffffff as any, fontFamily: 'ui-sans-serif, system-ui, Arial', fontSize: 12 },
+        })
+        this.overlayText.alpha = 0.55
+      }
+      if (this.overlayText.parent !== this.app.stage) this.app.stage.addChild(this.overlayText)
+      this._updateOverlay()
+    } catch {}
+    // Start FPS loop
+    this._startFpsLoop()
 
     // Asegurar fondo también por CSS por compatibilidad
     try {
@@ -134,8 +175,11 @@ export class VektorEngine {
       .toString(16)
       .padStart(6, '0')}`
 
-  // Aplicar preset adaptativo antes de configurar el input
-  try { this.applyPreset('adaptive') } catch {}
+    // Aplicar preset adaptativo antes de configurar el input (override resolution only if no explicit preference)
+    try {
+      this.applyPreset('adaptive')
+      if (prefRes != null) this.setRendererResolution(prefRes)
+    } catch {}
 
   // Input de alta fidelidad directamente sobre el canvas
     this._onSamplesBound = this._onSamples.bind(this)
@@ -334,10 +378,12 @@ export class VektorEngine {
     try { this.removeKeyup?.() } catch {}
     try { this.removeWheel?.() } catch {}
     try { this.removeBeforeUnload?.() } catch {}
+    // stop FPS loop
+    if (this._fpsRafId !== null) { try { cancelAnimationFrame(this._fpsRafId) } catch {}; this._fpsRafId = null }
   }
 
   // --- Renderer & presets ---
-  private setRendererResolution(resolution: number) {
+  setRendererResolution(resolution: number) {
     try {
       const r: any = this.app.renderer as any
       const cvs = this.app.canvas as HTMLCanvasElement
@@ -351,6 +397,65 @@ export class VektorEngine {
       // Ensure CSS size remains unchanged (handled also by CanvasContainer)
       try { cvs.style.width = `${cssW}px`; cvs.style.height = `${cssH}px` } catch {}
     } catch {}
+  }
+
+  async reloadRenderer(opts?: { antialias?: boolean; resolution?: number }) {
+    const container = this.mountEl
+    if (!container) return
+    // snapshot size
+    const width = container.clientWidth || window.innerWidth
+    const height = container.clientHeight || window.innerHeight
+    // remove input and wheel listeners
+    try { this.inputCaptureDispose?.() } catch {}
+    try { this.removeWheel?.() } catch {}
+    // remove canvas from DOM
+    try { container.removeChild(this.app.canvas) } catch {}
+    // destroy renderer/context
+    try { (this.app.renderer as any).destroy?.(true) } catch {}
+    // re-init with requested options
+    const aa = opts?.antialias ?? this.currentAA
+    const res = Math.max(0.5, Math.min(4, opts?.resolution ?? this.getRendererResolution()))
+    await this.app.init({
+      width,
+      height,
+      backgroundColor: this.backgroundColor as any,
+      antialias: aa,
+      resolution: res,
+      powerPreference: 'high-performance' as any,
+      preserveDrawingBuffer: false as any,
+    })
+    this.currentAA = !!aa
+  // re-add world
+  try { if (!this.world.parent) this.app.stage.addChild(this.world) } catch {}
+  // re-add overlay
+  try { if (this.overlayText) this.app.stage.addChild(this.overlayText) } catch {}
+    // mount canvas
+    container.appendChild(this.app.canvas)
+    // restore background styles
+    try { ;(this.app.renderer as any).background.color = this.backgroundColor } catch {}
+    try { ;(this.app.canvas as HTMLCanvasElement).style.backgroundColor = `#${this.backgroundColor.toString(16).padStart(6, '0')}` } catch {}
+    // recreate input capture
+    if (this._onSamplesBound) {
+      const cap = createInputCapture(this.app.canvas, this._onSamplesBound as any, { relativeToTarget: true, usePointerRawUpdate: this.lowLatency })
+      this.inputCaptureDispose = () => cap.dispose()
+    }
+    // wheel handler
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      const rect = this.app.canvas.getBoundingClientRect()
+      const cx = e.clientX - rect.left
+      const cy = e.clientY - rect.top
+      const delta = e.deltaY < 0 ? 1.1 : 0.9
+      this.setZoom(this.zoom * delta, cx, cy)
+    }
+    this.app.canvas.addEventListener('wheel', onWheel, { passive: false })
+    this.removeWheel = () => this.app.canvas.removeEventListener('wheel', onWheel)
+    // detect index support again
+    try {
+      const gl: WebGLRenderingContext | WebGL2RenderingContext | undefined = (this.app.renderer as any).gl
+      this.supportsUint32Indices = !!(gl && ('OES_element_index_uint' in (gl as any).extensions || gl.getExtension('OES_element_index_uint')))
+    } catch {}
+    this._updateOverlay()
   }
 
   applyPreset(name: 'performance' | 'default' | 'quality' | 'adaptive') {
@@ -387,6 +492,26 @@ export class VektorEngine {
       this.setJitterParams({ amplitude: 0, frequency: 0.005 })
       // Keep current resolution (no change)
     }
+  }
+
+  getRendererResolution() {
+    try { return (this.app.renderer as any).resolution ?? 1 } catch { return 1 }
+  }
+  getAntialias() { return this.currentAA }
+  
+  private _updateOverlay() {
+    try {
+      if (!this.overlayText) return
+      const res = this.getRendererResolution()
+      const fps = Math.max(0, Math.round(this.fps || 0))
+      const text = `FPS ${fps} • Scale ${res.toFixed(1)}x • MSAA ${this.currentAA ? 'On' : 'Off'}`
+      if (this.overlayText.text !== text) this.overlayText.text = text
+      const rw = (this.app.renderer as any)?.width ?? 0
+      const rh = (this.app.renderer as any)?.height ?? 0
+      const margin = 8
+      this.overlayText.x = margin
+      this.overlayText.y = Math.max(margin, rh - margin - (this.overlayText.height || 12))
+    } catch {}
   }
 
   // --- API de estilo ---
@@ -513,11 +638,46 @@ export class VektorEngine {
 
   // --- History API ---
   private _emitHistoryChange() { for (const fn of this.historyListeners) { try { fn() } catch {} } }
+  private _emitFps() { for (const fn of this.fpsListeners) { try { fn(this.fps) } catch {} } }
 
   onHistoryChange(cb: () => void) {
     this.historyListeners.add(cb)
     return () => { this.historyListeners.delete(cb) }
   }
+
+  // --- FPS API ---
+  private _startFpsLoop() {
+    if (this._fpsRafId !== null) return
+    this._fpsAccumMs = 0
+    this._fpsFrames = 0
+    this._fpsLastMs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()
+    const tick = () => {
+      const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()
+      const dt = Math.max(0, now - this._fpsLastMs)
+      this._fpsLastMs = now
+      this._fpsAccumMs += dt
+      this._fpsFrames += 1
+      // Update roughly every 250ms for stability
+      if (this._fpsAccumMs >= 250) {
+        const fpsNow = (this._fpsFrames * 1000) / this._fpsAccumMs
+        // simple smoothing
+        this.fps = this.fps > 0 ? this.fps * 0.6 + fpsNow * 0.4 : fpsNow
+        this._emitFps()
+        this._updateOverlay()
+        this._fpsAccumMs = 0
+        this._fpsFrames = 0
+      }
+      this._fpsRafId = requestAnimationFrame(tick)
+    }
+    this._fpsRafId = requestAnimationFrame(tick)
+  }
+  onFps(cb: (fps: number) => void) {
+    this.fpsListeners.add(cb)
+    // immediate push of current value for convenience
+    try { cb(this.fps) } catch {}
+    return () => { this.fpsListeners.delete(cb) }
+  }
+  getFps() { return this.fps }
 
   undo() { this.history.undo() }
   redo() { this.history.redo() }

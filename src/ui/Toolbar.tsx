@@ -30,6 +30,11 @@ export const Toolbar: React.FC = () => {
   const [canUndo, setCanUndo] = useState(() => (engine as any).canUndo?.() ?? false)
   const [canRedo, setCanRedo] = useState(() => (engine as any).canRedo?.() ?? false)
   const [lowLatency, setLowLatency] = useState(() => (engine as any).getLowLatencyMode?.() ?? false)
+  const [fps, setFps] = useState<number>(() => (engine as any).getFps?.() ?? 0)
+  const [renderScale, setRenderScale] = useState<number>(() => (engine as any).getRendererResolution?.() ?? 1)
+  const [aaPref, setAaPref] = useState<boolean>(() => {
+    try { return localStorage.getItem('vi.renderer.antialias') === 'true' } catch { return false }
+  })
 
   const refreshFromEngine = () => {
     setActiveTool(engine.getActiveTool() as ToolName)
@@ -43,6 +48,7 @@ export const Toolbar: React.FC = () => {
     setJitter(engine.getJitterParams?.() ?? { amplitude: 0, frequency: 0.005, domain: 'distance' })
     setPreviewQ(engine.getPreviewQuality?.() ?? 1.0)
     setLowLatency((engine as any).getLowLatencyMode?.() ?? false)
+    setRenderScale((engine as any).getRendererResolution?.() ?? 1)
     setCanUndo((engine as any).canUndo?.() ?? false)
     setCanRedo((engine as any).canRedo?.() ?? false)
   }
@@ -114,9 +120,11 @@ export const Toolbar: React.FC = () => {
       setCanUndo((engine as any).canUndo?.() ?? false)
       setCanRedo((engine as any).canRedo?.() ?? false)
     })
+    const offFps = (engine as any).onFps?.((val: number) => setFps(val))
     return () => {
       window.removeEventListener('keydown', onKeyDown)
       try { off?.() } catch {}
+      try { offFps?.() } catch {}
     }
   }, [engine])
 
@@ -163,6 +171,13 @@ export const Toolbar: React.FC = () => {
       {/* Undo / Redo / Clear */}
       {!collapsed && (
         <div className="mt-1 flex gap-1">
+          {/* FPS Indicator */}
+          <div
+            className="px-2 py-1 text-xs rounded-md border border-gray-300 bg-gray-50 text-gray-700"
+            title="Estimated frames per second"
+          >
+            FPS {Math.round(fps).toString().padStart(2, ' ')}
+          </div>
           <button
             onClick={() => (engine as any).undo?.()}
             disabled={!canUndo}
@@ -339,6 +354,26 @@ export const Toolbar: React.FC = () => {
             <span className="text-xs tabular-nums w-10 text-right opacity-80">{Math.round(previewQ * 100)}%</span>
           </div>
 
+          {/* Renderer scale (resolution) */}
+          <div className="flex items-center gap-2 bg-gray-50 rounded-md p-2 border border-gray-200">
+            <span className="text-xs w-24 opacity-80" title="Escala interna del renderer. 1.0 = más rápido, 2.0 = más nítido.">Render Scale</span>
+            <input
+              type="range"
+              min={0.5}
+              max={2}
+              step={0.1}
+              value={renderScale}
+              onChange={(e) => {
+                const v = Number(e.target.value)
+                setRenderScale(v)
+                ;(engine as any).setRendererResolution?.(v)
+                try { localStorage.setItem('vi.renderer.resolution', String(v)) } catch {}
+              }}
+              className="w-36 accent-blue-500"
+            />
+            <span className="text-xs tabular-nums w-10 text-right opacity-80">{renderScale.toFixed(1)}x</span>
+          </div>
+
           {/* Latency Lab */}
           <div className="flex items-center gap-2 bg-yellow-50 rounded-md p-2 border border-yellow-300">
             <label className="flex items-center gap-2 cursor-pointer">
@@ -353,6 +388,27 @@ export const Toolbar: React.FC = () => {
               />
               <span className="text-xs opacity-80" title="Usa pointerrawupdate y acelera la cadencia del preview. Mejora la latencia percibida (consumo mayor).">Low latency (pen)</span>
             </label>
+            <label className="flex items-center gap-2 cursor-pointer ml-2">
+              <input
+                type="checkbox"
+                checked={aaPref}
+                onChange={(e) => {
+                  const v = e.target.checked
+                  setAaPref(v)
+                  try { localStorage.setItem('vi.renderer.antialias', v ? 'true' : 'false') } catch {}
+                }}
+              />
+              <span className="text-xs opacity-80" title="MSAA del canvas (requiere reiniciar/recargar)">MSAA (restart)</span>
+            </label>
+            <span className="text-[10px] text-gray-500 ml-1">Antialias se aplica al iniciar. Ajusta Render Scale para nitidez inmediata.</span>
+            <div className="ml-auto flex items-center gap-2">
+              <span className="text-[11px] text-gray-700">Scale {renderScale.toFixed(1)}x • MSAA {aaPref ? 'On' : 'Off'}</span>
+              <button
+                className="px-2 py-1 text-xs rounded-md border border-yellow-400 bg-yellow-100 hover:bg-yellow-200"
+                onClick={() => { (engine as any).reloadRenderer?.({ antialias: aaPref, resolution: renderScale }); refreshFromEngine() }}
+                title="Reinicia el renderer para aplicar MSAA y resolución actual"
+              >Restart renderer now</button>
+            </div>
           </div>
 
           {/* Presets */}

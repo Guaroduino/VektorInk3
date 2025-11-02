@@ -15,12 +15,14 @@ class Batch {
   geom: MeshGeometry
   vertexCount = 0
   indexCount = 0
+  private useUint32: boolean
 
-  constructor(style: BatchStyle) {
+  constructor(style: BatchStyle, useUint32: boolean) {
+    this.useUint32 = useUint32
     this.geom = new MeshGeometry({
       positions: new Float32Array(0),
       uvs: new Float32Array(0),
-      indices: new Uint32Array(0),
+      indices: (this.useUint32 ? new Uint32Array(0) : new Uint16Array(0)) as any,
     })
     this.mesh = new Mesh({ geometry: this.geom, texture: Texture.WHITE })
     this.mesh.tint = style.color >>> 0
@@ -55,12 +57,11 @@ class Batch {
     this.geom.buffers[1].update()
 
     // Grow index buffer with offset
-    const oldIdx = this.geom.indexBuffer.data as Uint32Array | Uint16Array
-    // Always use Uint32 for safety (Pixi supports it; we created Uint32 initially)
-    const newIdx = new Uint32Array(prevI + addI)
-    if (oldIdx && oldIdx.length) newIdx.set(oldIdx as Uint32Array, 0)
-    for (let i = 0; i < addI; i++) newIdx[prevI + i] = (indices[i] as number) + prevV
-    this.geom.indexBuffer.data = newIdx
+  const oldIdx = this.geom.indexBuffer.data as Uint32Array | Uint16Array
+  const newIdx = this.useUint32 ? new Uint32Array(prevI + addI) : new Uint16Array(prevI + addI)
+  if (oldIdx && oldIdx.length) (newIdx as any).set(oldIdx as any, 0)
+  for (let i = 0; i < addI; i++) (newIdx as any)[prevI + i] = ((indices as any)[i] as number) + prevV
+  this.geom.indexBuffer.data = newIdx as any
     this.geom.indexBuffer.update()
 
     this.vertexCount += addV
@@ -87,19 +88,38 @@ export type BatchAppendToken = {
 export class LayerBatch {
   private layer: Container
   private batches = new Map<string, Batch>()
+  private partCounters = new Map<string, number>()
+  private useUint32: boolean
 
-  constructor(layer: Container) {
+  constructor(layer: Container, useUint32: boolean) {
     this.layer = layer
+    this.useUint32 = useUint32
   }
 
   appendStroke(data: { positions: Float32Array; uvs: Float32Array; indices: Uint32Array | Uint16Array }, style: BatchStyle): BatchAppendToken {
-    const key = makeKey(style)
+    let key = makeKey(style)
     let batch = this.batches.get(key)
     if (!batch) {
-      batch = new Batch(style)
+      batch = new Batch(style, this.useUint32)
       this.batches.set(key, batch)
-      // Add as a child at the back so it sits under interactive items
       this.layer.addChildAt(batch.mesh, 0)
+    }
+    // If 32-bit indices are not available, ensure we don't overflow 65535 vertices/indices.
+    if (!this.useUint32) {
+      const addV = data.positions.length / 2
+      const addI = data.indices.length
+      const wouldOverflow = (batch.vertexCount + addV) > 65535 || (batch.indexCount + addI) > 65535
+      if (wouldOverflow) {
+        // Create a new partitioned batch for this style
+        const count = (this.partCounters.get(key) ?? 0) + 1
+        this.partCounters.set(key, count)
+        key = `${key}#${count}`
+        batch = this.batches.get(key) || new Batch(style, this.useUint32)
+        if (!this.batches.has(key)) {
+          this.batches.set(key, batch)
+          this.layer.addChildAt(batch.mesh, 0)
+        }
+      }
     }
     const token: BatchAppendToken = {
       key,
@@ -145,7 +165,7 @@ export class LayerBatch {
   reapplyAppend(token: BatchAppendToken) {
     let batch = this.batches.get(token.key)
     if (!batch) {
-      batch = new Batch(token.style)
+      batch = new Batch(token.style, this.useUint32)
       this.batches.set(token.key, batch)
       this.layer.addChildAt(batch.mesh, 0)
     }
