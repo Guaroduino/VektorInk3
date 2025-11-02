@@ -6,6 +6,7 @@ import react from '@vitejs/plugin-react'
 // - Keeps worker bundles in ES module format (default)
 // - You can tweak server settings here if needed
 export default defineConfig({
+  base: '/VektorInk3/',
   plugins: [react()],
   server: {
     open: true,
