@@ -26,6 +26,7 @@ export const Toolbar: React.FC = () => {
   const [fh, setFh] = useState(() => engine.getFreehandParams?.() ?? { thinning: 0.6, smoothing: 0.6, streamline: 0.5 })
   const [pressureEnabled, setPressureEnabled] = useState(() => engine.getPressureSensitivity?.() ?? true)
   const [jitter, setJitter] = useState(() => engine.getJitterParams?.() ?? { amplitude: 0, frequency: 0.005, domain: 'distance' as 'distance' | 'time' })
+  const [previewQ, setPreviewQ] = useState(() => engine.getPreviewQuality?.() ?? 0.8)
 
   const handleToolClick = (toolName: ToolName) => {
     engine.setActiveTool(toolName)
@@ -75,6 +76,11 @@ export const Toolbar: React.FC = () => {
     const next = { ...jitter, domain }
     setJitter(next)
     engine.setJitterParams?.(next)
+  }
+
+  const onPreviewQChange = (v: number) => {
+    setPreviewQ(v)
+    engine.setPreviewQuality?.(v)
   }
 
   // Mantener la UI en sync cuando se usa el teclado (1-4)
@@ -261,6 +267,21 @@ export const Toolbar: React.FC = () => {
             <div className="text-[10px] text-gray-500 leading-tight mt-1">
               <div>El <strong>suavizado del jitter</strong> usa el control Freehand → Smoothing.</div>
             </div>
+          </div>
+
+          {/* Preview quality */}
+          <div className="flex items-center gap-2 bg-gray-50 rounded-md p-2 border border-gray-200">
+            <span className="text-xs w-24 opacity-80" title="Afecta solo al preview: decimación del trazo y cadencia de teselado">Preview Quality</span>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.01}
+              value={previewQ}
+              onChange={(e) => onPreviewQChange(Number(e.target.value))}
+              className="w-36 accent-blue-500"
+            />
+            <span className="text-xs tabular-nums w-10 text-right opacity-80">{Math.round(previewQ * 100)}%</span>
           </div>
         </div>
       )}

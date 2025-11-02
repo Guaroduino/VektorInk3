@@ -34,6 +34,8 @@ export class VektorEngine {
   private backgroundColor: number = 0x111111
   private opacity: number = 1.0
   private blendMode: string = 'normal'
+  // Preview quality (0..1): 1 = best (no decimation, fastest cadence), 0 = lowest (more decimation, slower cadence)
+  private previewQuality: number = 0.8
   private freehand = {
     thinning: 0.6,
     smoothing: 0.6,
@@ -278,6 +280,11 @@ export class VektorEngine {
   const window = 1 + Math.round(smooth * 2) // 1..3 samples to avoid over-smoothing speed
   const thinningCfg = { minSpeedScale, exponent, speedRefPxPerMs, window, smooth, invert }
 
+        // Map preview quality to decimation and cadence
+        const q = Math.max(0, Math.min(1, this.previewQuality))
+        const previewDecimatePx = (1 - q) * 3.0 // 0..3 px
+        const previewMinMs = 33 - Math.round(q * 25) // 8..33 ms
+
         t.setStyle({
           strokeSize: this.strokeSize,
           strokeColor: this.strokeColor,
@@ -287,6 +294,7 @@ export class VektorEngine {
           thinning: thinningCfg,
           jitter: { amplitude: this.jitter.amplitude, frequency: this.jitter.frequency, domain: this.jitter.domain, smooth, seed: (Date.now() & 0xffffffff) >>> 0 },
           streamline: this.freehand.streamline,
+          preview: { decimatePx: previewDecimatePx, minMs: previewMinMs },
         })
       }
     }
@@ -317,6 +325,13 @@ export class VektorEngine {
     this.applyStyleToTools()
   }
   getBlendMode() { return this.blendMode }
+
+  // --- Preview quality API ---
+  setPreviewQuality(q: number) {
+    this.previewQuality = Math.max(0, Math.min(1, q))
+    this.applyStyleToTools()
+  }
+  getPreviewQuality() { return this.previewQuality }
 
   setFreehandParams(params: { thinning?: number; smoothing?: number; streamline?: number }) {
     if (typeof params.thinning === 'number') this.freehand.thinning = Math.max(-1, Math.min(1, params.thinning))

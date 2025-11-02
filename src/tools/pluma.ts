@@ -2,6 +2,7 @@ import { Container, Mesh, MeshGeometry, Texture } from 'pixi.js'
 import simplify from 'simplify-js'
 import type { InputSample } from '../input'
 import { buildStrokeStrip, buildOuterPolygon, type StrokeBuilderParams, type PressureMode } from '../geom/strokeBuilder'
+import { decimateByDistance } from '../geom/decimate'
 import { triangulateWithTess2Async } from '../geom/tessWorkerClient'
 
 /**
@@ -24,6 +25,7 @@ export class PlumaTool {
   private thinning: { minSpeedScale?: number; speedRefPxPerMs?: number; window?: number; exponent?: number } | undefined = undefined
   private jitter: { amplitude?: number; frequency?: number; seed?: number; smooth?: number; domain?: 'distance' | 'time' } | undefined = undefined
   private streamline: number = 0
+  private previewCfg: { decimatePx: number; minMs: number } = { decimatePx: 0, minMs: 16 }
 
   private _isEnding = false // Bandera de estado
   private _seq = 0
@@ -31,6 +33,9 @@ export class PlumaTool {
   private _strokeToken = 0
   private _lastTessTime = 0
   private _accumDist = 0
+  private _rafScheduled = false
+  private _inFlight = false
+  private _queuedPoly: { x: number; y: number }[] | null = null
 
   setStyle(styleOrSize: any, color?: number) {
     if (typeof styleOrSize === 'object') {
@@ -52,9 +57,10 @@ export class PlumaTool {
       if (s.pressureCurve) this.pressureCurve = s.pressureCurve
       if (s.widthScaleRange) this.widthScaleRange = s.widthScaleRange
       if (s.opacityRange) this.opacityRange = s.opacityRange
-      if (s.thinning) this.thinning = { ...s.thinning }
-  if (s.jitter) this.jitter = { ...s.jitter }
-  if (typeof (s as any).streamline === 'number') this.streamline = Math.max(0, Math.min(1, (s as any).streamline))
+    if (s.thinning) this.thinning = { ...s.thinning }
+    if (s.jitter) this.jitter = { ...s.jitter }
+    if (typeof (s as any).streamline === 'number') this.streamline = Math.max(0, Math.min(1, (s as any).streamline))
+    if ((s as any).preview) this.previewCfg = { ...((s as any).preview) }
     } else {
       this.strokeSize = styleOrSize
       this.strokeColor = (color ?? this.strokeColor) >>> 0
@@ -97,16 +103,28 @@ export class PlumaTool {
       }
       for (const s of samples) this.points.push({ x: s.x, y: s.y, pressure: s.pressure, time: s.time })
     }
+  if (!this.previewMesh) return
+    // Coalesce via rAF
+    if (!this._rafScheduled) {
+      this._rafScheduled = true
+      requestAnimationFrame(() => {
+        this._rafScheduled = false
+        this._previewStep()
+      })
+    }
+  }
+
+  private _previewStep() {
     if (!this.previewMesh) return
     const now = performance.now ? performance.now() : Date.now()
-    // throttle: at most ~60 Hz and only after enough path growth
-    if (this._pending) return
-    if (now - this._lastTessTime < 16 && this._accumDist < 6) return
+    const minMs = Math.max(0, this.previewCfg.minMs | 0)
+    if (now - this._lastTessTime < minMs && this._accumDist < Math.max(2, this.previewCfg.decimatePx * 2)) return
     this._lastTessTime = now
     this._accumDist = 0
     const geom = this.previewMesh.geometry
     // Tessellate polygon for preview to avoid self-overlap accumulation
-    const { outlines } = buildStrokeStrip(this.points as any, this._builderParams())
+    const decPts = this.previewCfg.decimatePx > 0 ? decimateByDistance(this.points as any, this.previewCfg.decimatePx) : this.points
+    const { outlines } = buildStrokeStrip(decPts as any, this._builderParams())
     const polyF32 = buildOuterPolygon(outlines.left, outlines.right, true)
     if (polyF32.length < 6) {
       geom.buffers[0].data = new Float32Array(0)
@@ -124,9 +142,20 @@ export class PlumaTool {
     for (let i = 0; i < polyF32.length - 2; i += 2) poly.push({ x: polyF32[i], y: polyF32[i + 1] })
     const seq = ++this._seq
     const token = this._strokeToken
-    this._pending = true
-    triangulateWithTess2Async([poly], 'nonzero').then(({ positions, indices }) => {
-      this._pending = false
+    // latest-wins queue
+    const runTess = (polyIn: {x:number;y:number}[]) => {
+      this._inFlight = true
+      triangulateWithTess2Async([polyIn], 'nonzero').then(({ positions, indices }) => {
+        this._inFlight = false
+        if (!this.previewMesh) return
+        if (token !== this._strokeToken) return
+        if (seq !== this._seq) return
+        if (this._queuedPoly) {
+          const q = this._queuedPoly
+          this._queuedPoly = null
+          runTess(q)
+          return
+        }
       if (!this.previewMesh) return
       if (token !== this._strokeToken) return
       if (seq !== this._seq) return
@@ -153,7 +182,10 @@ export class PlumaTool {
       ;(geom as any).vertexCount = positions.length / 2
       this.previewMesh.visible = true
       this.previewMesh.alpha = this.opacity
-    }).catch(() => { this._pending = false })
+      }).catch(() => { this._inFlight = false })
+    }
+    if (this._inFlight) this._queuedPoly = poly
+    else runTess(poly)
   }
 
   async end(layer: Container) {

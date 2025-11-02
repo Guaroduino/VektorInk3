@@ -2,6 +2,7 @@ import { Container, Mesh, MeshGeometry, Texture } from 'pixi.js'
 import type { InputSample } from '../input'
 import { buildStrokeStrip, type StrokeBuilderParams, type PressureMode } from '../geom/strokeBuilder'
 import { createAlphaStripShader, updateAlphaStripShader } from '../graphics/alphaStripShader'
+import { decimateByDistance } from '../geom/decimate'
 
 /**
  * Lápiz Vectorial (No Editable):
@@ -25,6 +26,10 @@ export class LapizVectorTool {
   private jitter: { amplitude?: number; frequency?: number; seed?: number; smooth?: number; domain?: 'distance' | 'time' } | undefined = undefined
   private streamline: number = 0
   private usingPerVertexAlpha = false
+  private previewCfg: { decimatePx: number; minMs: number } = { decimatePx: 0, minMs: 16 }
+  private _rafScheduled = false
+  private _lastUpdateTime = 0
+  private _accumDist = 0
 
   setStyle(styleOrSize: any, color?: number) {
     if (typeof styleOrSize === 'object') {
@@ -49,6 +54,7 @@ export class LapizVectorTool {
       if (s.thinning) this.thinning = { ...s.thinning }
   if (s.jitter) this.jitter = { ...s.jitter }
   if (typeof (s as any).streamline === 'number') this.streamline = Math.max(0, Math.min(1, (s as any).streamline))
+  if ((s as any).preview) this.previewCfg = { ...((s as any).preview) }
     } else {
       this.widthBase = Math.max(1, styleOrSize)
       this.strokeColor = (color ?? this.strokeColor) >>> 0
@@ -72,6 +78,8 @@ export class LapizVectorTool {
   start(layer: Container) {
     this.container = layer
     this.points = []
+    this._lastUpdateTime = 0
+    this._accumDist = 0
 
     // Crea un mesh de preview vacío que iremos actualizando en tiempo real
     const geom = new MeshGeometry({ positions: new Float32Array(), uvs: new Float32Array(), indices: new Uint32Array() })
@@ -88,11 +96,38 @@ export class LapizVectorTool {
   }
 
   update(samples: InputSample[]) {
-    for (const s of samples) this.points.push({ x: s.x, y: s.y, pressure: s.pressure, time: s.time })
-
+    if (samples.length) {
+      if (this.points.length) {
+        let prev = this.points[this.points.length - 1]
+        for (const s of samples) {
+          const dx = s.x - prev.x
+          const dy = s.y - prev.y
+          this._accumDist += Math.hypot(dx, dy)
+          prev = { x: s.x, y: s.y }
+        }
+      }
+      for (const s of samples) this.points.push({ x: s.x, y: s.y, pressure: s.pressure, time: s.time })
+    }
     if (!this.previewMesh) return
+    if (!this._rafScheduled) {
+      this._rafScheduled = true
+      requestAnimationFrame(() => {
+        this._rafScheduled = false
+        this._previewStep()
+      })
+    }
+  }
+
+  private _previewStep() {
+    if (!this.previewMesh) return
+    const now = performance.now ? performance.now() : Date.now()
+    const minMs = Math.max(0, this.previewCfg.minMs | 0)
+    if (now - this._lastUpdateTime < minMs && this._accumDist < Math.max(2, this.previewCfg.decimatePx * 2)) return
+    this._lastUpdateTime = now
+    this._accumDist = 0
     const geom = this.previewMesh.geometry
-    const { strip, factors } = buildStrokeStrip(this.points as any, this._builderParams())
+    const decPts = this.previewCfg.decimatePx > 0 ? decimateByDistance(this.points as any, this.previewCfg.decimatePx) : this.points
+    const { strip, factors } = buildStrokeStrip(decPts as any, this._builderParams())
     if (strip.indices.length < 3) {
       geom.buffers[0].data = new Float32Array(0)
       geom.buffers[0].update()
