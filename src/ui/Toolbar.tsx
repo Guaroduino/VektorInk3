@@ -31,6 +31,22 @@ export const Toolbar: React.FC = () => {
   const [canRedo, setCanRedo] = useState(() => (engine as any).canRedo?.() ?? false)
   const [lowLatency, setLowLatency] = useState(() => (engine as any).getLowLatencyMode?.() ?? false)
 
+  const refreshFromEngine = () => {
+    setActiveTool(engine.getActiveTool() as ToolName)
+    setSize(engine.getStrokeSize?.() ?? 8)
+    setStrokeHex(`#${(engine.getStrokeColor?.() ?? 0xffffff).toString(16).padStart(6, '0')}`)
+    setBgHex(`#${(engine.getBackgroundColor?.() ?? 0x111111).toString(16).padStart(6, '0')}`)
+    setOpacity(engine.getOpacity?.() ?? 1)
+    setBlend(engine.getBlendMode?.() ?? 'normal')
+    setFh(engine.getFreehandParams?.() ?? { thinning: 0.6, smoothing: 0.6, streamline: 0.5 })
+    setPressureEnabled(engine.getPressureSensitivity?.() ?? true)
+    setJitter(engine.getJitterParams?.() ?? { amplitude: 0, frequency: 0.005, domain: 'distance' })
+    setPreviewQ(engine.getPreviewQuality?.() ?? 1.0)
+    setLowLatency((engine as any).getLowLatencyMode?.() ?? false)
+    setCanUndo((engine as any).canUndo?.() ?? false)
+    setCanRedo((engine as any).canRedo?.() ?? false)
+  }
+
   const handleToolClick = (toolName: ToolName) => {
     engine.setActiveTool(toolName)
     setActiveTool(toolName)
@@ -337,6 +353,31 @@ export const Toolbar: React.FC = () => {
               />
               <span className="text-xs opacity-80" title="Usa pointerrawupdate y acelera la cadencia del preview. Mejora la latencia percibida (consumo mayor).">Low latency (pen)</span>
             </label>
+          </div>
+
+          {/* Presets */}
+          <div className="flex items-center gap-2 bg-green-50 rounded-md p-2 border border-green-300">
+            <span className="text-xs opacity-80">Presets</span>
+            <button
+              className="px-2 py-1 text-xs rounded-md border border-green-400 bg-green-100 hover:bg-green-200"
+              onClick={() => { (engine as any).applyPreset?.('performance'); refreshFromEngine() }}
+              title="Optimiza para la menor latencia (resolución interna baja, preview rápido, suavizado reducido)"
+            >Performance</button>
+            <button
+              className="px-2 py-1 text-xs rounded-md border border-blue-400 bg-blue-100 hover:bg-blue-200"
+              onClick={() => { (engine as any).applyPreset?.('quality'); refreshFromEngine() }}
+              title="Prioriza nitidez en desktop (sube resolución interna y suavizados moderados)"
+            >Quality</button>
+            <button
+              className="px-2 py-1 text-xs rounded-md border border-purple-400 bg-purple-100 hover:bg-purple-200"
+              onClick={() => { (engine as any).applyPreset?.('adaptive'); refreshFromEngine() }}
+              title="Elige automáticamente según el dispositivo (móvil/táctil ⇒ Performance, desktop ⇒ Quality)"
+            >Auto</button>
+            <button
+              className="px-2 py-1 text-xs rounded-md border border-gray-300 bg-white hover:bg-gray-100"
+              onClick={() => { (engine as any).applyPreset?.('default'); refreshFromEngine() }}
+              title="Vuelve a los valores por defecto/balanceados"
+            >Default</button>
           </div>
         </div>
       )}

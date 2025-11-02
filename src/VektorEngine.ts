@@ -22,7 +22,7 @@ export class VektorEngine {
   private removeBeforeUnload?: () => void
 
   private tools: Record<ToolKey, any>
-  private activeToolKey: ToolKey = 'pluma'
+  private activeToolKey: ToolKey = 'vpen'
   private drawing = false
   private panMode = false
   private isPanningDrag = false
@@ -41,11 +41,12 @@ export class VektorEngine {
   private opacity: number = 1.0
   private blendMode: string = 'normal'
   // Preview quality (0..1): 1 = best (no decimation, fastest cadence), 0 = lowest (more decimation, slower cadence)
-  private previewQuality: number = 0.8
+  private previewQuality: number = 1.0
   private freehand = {
     thinning: 0.6,
-    smoothing: 0.6,
-    streamline: 0.5,
+    // Reducir suavizados por defecto para minimizar coste y latencia
+    smoothing: 0.3,
+    streamline: 0.2,
   }
   // Pressure sensitivity enabled by default
   private pressureSensitivity: boolean = true
@@ -56,7 +57,7 @@ export class VektorEngine {
     domain: 'distance' as 'distance' | 'time',
   }
   // Latency experiment flags
-  private lowLatency: boolean = false
+  private lowLatency: boolean = true
   private previewMinMsOverride: number | null = null
 
   constructor() {
@@ -109,8 +110,14 @@ export class VektorEngine {
       width,
       height,
       backgroundColor: this.backgroundColor as any,
-      antialias: true,
-      resolution: window.devicePixelRatio || 1,
+      // Preferir el camino de menor latencia: sin MSAA y menor resolución por defecto
+      antialias: false,
+      // En móviles con dpr alto, fijar a 1 reduce significativamente la latencia gráfica
+      resolution: 1,
+      // Sugerir hacer uso de la GPU de alto rendimiento cuando sea posible
+      powerPreference: 'high-performance' as any,
+      // Evitar costos extra de preservación de buffer si el renderer lo respeta
+      preserveDrawingBuffer: false as any,
     })
 
     // Asegurar jerarquía
@@ -127,7 +134,10 @@ export class VektorEngine {
       .toString(16)
       .padStart(6, '0')}`
 
-    // Input de alta fidelidad directamente sobre el canvas
+  // Aplicar preset adaptativo antes de configurar el input
+  try { this.applyPreset('adaptive') } catch {}
+
+  // Input de alta fidelidad directamente sobre el canvas
     this._onSamplesBound = this._onSamples.bind(this)
     const onSamples = this._onSamplesBound
     const cap = createInputCapture(this.app.canvas, onSamples as any, { relativeToTarget: true, usePointerRawUpdate: this.lowLatency })
@@ -324,6 +334,59 @@ export class VektorEngine {
     try { this.removeKeyup?.() } catch {}
     try { this.removeWheel?.() } catch {}
     try { this.removeBeforeUnload?.() } catch {}
+  }
+
+  // --- Renderer & presets ---
+  private setRendererResolution(resolution: number) {
+    try {
+      const r: any = this.app.renderer as any
+      const cvs = this.app.canvas as HTMLCanvasElement
+      const cssW = cvs.clientWidth || r.width || 1
+      const cssH = cvs.clientHeight || r.height || 1
+      // Apply new resolution if supported
+      if (typeof r === 'object') {
+        try { r.resolution = Math.max(0.5, Math.min(4, resolution)) } catch {}
+        try { r.resize(cssW, cssH) } catch {}
+      }
+      // Ensure CSS size remains unchanged (handled also by CanvasContainer)
+      try { cvs.style.width = `${cssW}px`; cvs.style.height = `${cssH}px` } catch {}
+    } catch {}
+  }
+
+  applyPreset(name: 'performance' | 'default' | 'quality' | 'adaptive') {
+    if (name === 'performance') {
+      // Prioritize latency and throughput
+      this.setLowLatencyMode(true)
+      this.setPreviewQuality(1.0)
+      this.setFreehandParams({ smoothing: 0.2, streamline: 0.1 })
+      this.setJitterParams({ amplitude: 0 })
+      // Lower internal resolution for speed on mobile/high-DPI
+      this.setRendererResolution(1)
+    } else if (name === 'quality') {
+      // Favor visual crispness (mostly for desktop). MSAA remains off; we use higher resolution.
+      this.setLowLatencyMode(true)
+      this.setPreviewQuality(1.0)
+      this.setFreehandParams({ thinning: 0.6, smoothing: 0.45, streamline: 0.35 })
+      this.setJitterParams({ amplitude: 0.05, frequency: 0.005 })
+      const dpr = (window as any)?.devicePixelRatio || 1
+      this.setRendererResolution(Math.min(2, Math.max(1, dpr)))
+    } else if (name === 'adaptive') {
+      // Heuristics: touch-heavy/mobile => performance; otherwise quality
+      const nav: any = (typeof navigator !== 'undefined') ? navigator : {}
+      const ua = (nav.userAgent || '').toLowerCase()
+      const isAndroid = ua.includes('android')
+      const isiOS = /iphone|ipad|ipod/.test(ua)
+      const hasTouch = (nav.maxTouchPoints ?? 0) > 0
+      if (isAndroid || isiOS || hasTouch) this.applyPreset('performance')
+      else this.applyPreset('quality')
+    } else {
+      // Default/balanced settings
+      this.setLowLatencyMode(true)
+      this.setPreviewQuality(1.0)
+      this.setFreehandParams({ thinning: 0.6, smoothing: 0.3, streamline: 0.2 })
+      this.setJitterParams({ amplitude: 0, frequency: 0.005 })
+      // Keep current resolution (no change)
+    }
   }
 
   // --- API de estilo ---
