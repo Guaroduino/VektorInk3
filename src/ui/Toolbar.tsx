@@ -400,7 +400,6 @@ export const Toolbar: React.FC = () => {
               />
               <span className="text-xs opacity-80" title="MSAA del canvas (requiere reiniciar/recargar)">MSAA (restart)</span>
             </label>
-            <span className="text-[10px] text-gray-500 ml-1">Antialias se aplica al iniciar. Ajusta Render Scale para nitidez inmediata.</span>
             <div className="ml-auto flex items-center gap-2">
               <span className="text-[11px] text-gray-700">Scale {renderScale.toFixed(1)}x • MSAA {aaPref ? 'On' : 'Off'}</span>
               <button
