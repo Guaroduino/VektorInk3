@@ -29,6 +29,7 @@ export const Toolbar: React.FC = () => {
   const [previewQ, setPreviewQ] = useState(() => engine.getPreviewQuality?.() ?? 0.8)
   const [canUndo, setCanUndo] = useState(() => (engine as any).canUndo?.() ?? false)
   const [canRedo, setCanRedo] = useState(() => (engine as any).canRedo?.() ?? false)
+  const [lowLatency, setLowLatency] = useState(() => (engine as any).getLowLatencyMode?.() ?? false)
 
   const handleToolClick = (toolName: ToolName) => {
     engine.setActiveTool(toolName)
@@ -320,6 +321,22 @@ export const Toolbar: React.FC = () => {
               className="w-36 accent-blue-500"
             />
             <span className="text-xs tabular-nums w-10 text-right opacity-80">{Math.round(previewQ * 100)}%</span>
+          </div>
+
+          {/* Latency Lab */}
+          <div className="flex items-center gap-2 bg-yellow-50 rounded-md p-2 border border-yellow-300">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={lowLatency}
+                onChange={(e) => {
+                  const on = e.target.checked
+                  setLowLatency(on)
+                  ;(engine as any).setLowLatencyMode?.(on)
+                }}
+              />
+              <span className="text-xs opacity-80" title="Usa pointerrawupdate y acelera la cadencia del preview. Mejora la latencia percibida (consumo mayor).">Low latency (pen)</span>
+            </label>
           </div>
         </div>
       )}

@@ -15,6 +15,7 @@ export class VektorEngine {
   private world: Container
   private layers: LayerManager
   private inputCaptureDispose: (() => void) | null = null
+  private _onSamplesBound?: (id: number, samples: InputSample[], phase: PointerPhase, rawEvent: PointerEvent) => void
   private removeKeydown?: () => void
   private removeKeyup?: () => void
   private removeWheel?: () => void
@@ -54,6 +55,9 @@ export class VektorEngine {
     frequency: 0.005,   // cycles per pixel of arclength or per ms when time-based
     domain: 'distance' as 'distance' | 'time',
   }
+  // Latency experiment flags
+  private lowLatency: boolean = false
+  private previewMinMsOverride: number | null = null
 
   constructor() {
     // Núcleo Pixi (se termina de inicializar en init())
@@ -124,7 +128,68 @@ export class VektorEngine {
       .padStart(6, '0')}`
 
     // Input de alta fidelidad directamente sobre el canvas
-    const onSamples = (_id: number, samples: InputSample[], phase: PointerPhase) => {
+    this._onSamplesBound = this._onSamples.bind(this)
+    const onSamples = this._onSamplesBound
+    const cap = createInputCapture(this.app.canvas, onSamples as any, { relativeToTarget: true, usePointerRawUpdate: this.lowLatency })
+    this.inputCaptureDispose = () => cap.dispose()
+    // Zoom helpers
+    // Inicializar helpers de zoom expuestos también como API pública
+    // (Se implementan como métodos de instancia)
+    
+    // Atajos de teclado
+    const onKeyDown = (e: KeyboardEvent) => {
+  if ((e as any).repeat) return
+  if (e.code === 'Digit1') this.activeToolKey = 'pluma'
+      else if (e.code === 'Digit2') this.activeToolKey = 'vpen'
+      else if (e.code === 'Digit3') this.activeToolKey = 'raster'
+      else if (e.code === 'Digit4') this.activeToolKey = 'contorno'
+      else if (e.code === 'KeyN') this.layers.create(`Capa ${this.layers.list().length + 1}`)
+      else if (e.code === 'Delete') {
+        const a = this.layers.active
+        if (a) this.layers.remove(a.id)
+      }
+  else if (e.code === 'Equal' || e.code === 'NumpadAdd') this.zoomIn()
+  else if (e.code === 'Minus' || e.code === 'NumpadSubtract') this.zoomOut()
+  else if (e.code === 'Digit0') this.zoomReset()
+      // Undo / Redo
+      else if (e.ctrlKey && !e.shiftKey && e.code === 'KeyZ') { e.preventDefault(); this.undo() }
+      else if ((e.ctrlKey && e.code === 'KeyY') || (e.ctrlKey && e.shiftKey && e.code === 'KeyZ')) { e.preventDefault(); this.redo() }
+      // Clear canvas (Ctrl+K)
+      else if (e.ctrlKey && !e.shiftKey && e.code === 'KeyK') { e.preventDefault(); this.clearCanvas() }
+      else if (e.code === 'Space') {
+        this.panMode = true
+      }
+    }
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') this.panMode = false
+    }
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
+    this.removeKeydown = () => window.removeEventListener('keydown', onKeyDown)
+    this.removeKeyup = () => window.removeEventListener('keyup', onKeyUp)
+
+    // Rueda (zoom focal)
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      const rect = this.app.canvas.getBoundingClientRect()
+      const cx = e.clientX - rect.left
+      const cy = e.clientY - rect.top
+      const delta = e.deltaY < 0 ? 1.1 : 0.9
+      this.setZoom(this.zoom * delta, cx, cy)
+    }
+    this.app.canvas.addEventListener('wheel', onWheel, { passive: false })
+    this.removeWheel = () => this.app.canvas.removeEventListener('wheel', onWheel)
+
+    // Cleanup
+    const onUnload = () => {
+      this.dispose()
+    }
+    window.addEventListener('beforeunload', onUnload)
+    this.removeBeforeUnload = () => window.removeEventListener('beforeunload', onUnload)
+  }
+
+  // Handler de muestras separado para poder reusar al reconfigurar input
+  private _onSamples(_id: number, samples: InputSample[], phase: PointerPhase) {
       // Modo pan: usar drag para desplazar world
       if (this.panMode || this.isPanningDrag) {
         if (phase === 'start') {
@@ -215,64 +280,6 @@ export class VektorEngine {
           }
           break
       }
-    }
-    const cap = createInputCapture(this.app.canvas, onSamples, { relativeToTarget: true })
-    this.inputCaptureDispose = () => cap.dispose()
-
-    // Zoom helpers
-    // Inicializar helpers de zoom expuestos también como API pública
-    // (Se implementan como métodos de instancia)
-
-    // Atajos de teclado
-    const onKeyDown = (e: KeyboardEvent) => {
-  if ((e as any).repeat) return
-  if (e.code === 'Digit1') this.activeToolKey = 'pluma'
-      else if (e.code === 'Digit2') this.activeToolKey = 'vpen'
-      else if (e.code === 'Digit3') this.activeToolKey = 'raster'
-      else if (e.code === 'Digit4') this.activeToolKey = 'contorno'
-      else if (e.code === 'KeyN') this.layers.create(`Capa ${this.layers.list().length + 1}`)
-      else if (e.code === 'Delete') {
-        const a = this.layers.active
-        if (a) this.layers.remove(a.id)
-      }
-  else if (e.code === 'Equal' || e.code === 'NumpadAdd') this.zoomIn()
-  else if (e.code === 'Minus' || e.code === 'NumpadSubtract') this.zoomOut()
-  else if (e.code === 'Digit0') this.zoomReset()
-      // Undo / Redo
-      else if (e.ctrlKey && !e.shiftKey && e.code === 'KeyZ') { e.preventDefault(); this.undo() }
-      else if ((e.ctrlKey && e.code === 'KeyY') || (e.ctrlKey && e.shiftKey && e.code === 'KeyZ')) { e.preventDefault(); this.redo() }
-      // Clear canvas (Ctrl+K)
-      else if (e.ctrlKey && !e.shiftKey && e.code === 'KeyK') { e.preventDefault(); this.clearCanvas() }
-      else if (e.code === 'Space') {
-        this.panMode = true
-      }
-    }
-    const onKeyUp = (e: KeyboardEvent) => {
-      if (e.code === 'Space') this.panMode = false
-    }
-    window.addEventListener('keydown', onKeyDown)
-    window.addEventListener('keyup', onKeyUp)
-    this.removeKeydown = () => window.removeEventListener('keydown', onKeyDown)
-    this.removeKeyup = () => window.removeEventListener('keyup', onKeyUp)
-
-    // Rueda (zoom focal)
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault()
-      const rect = this.app.canvas.getBoundingClientRect()
-      const cx = e.clientX - rect.left
-      const cy = e.clientY - rect.top
-      const delta = e.deltaY < 0 ? 1.1 : 0.9
-      this.setZoom(this.zoom * delta, cx, cy)
-    }
-    this.app.canvas.addEventListener('wheel', onWheel, { passive: false })
-    this.removeWheel = () => this.app.canvas.removeEventListener('wheel', onWheel)
-
-    // Cleanup
-    const onUnload = () => {
-      this.dispose()
-    }
-    window.addEventListener('beforeunload', onUnload)
-    this.removeBeforeUnload = () => window.removeEventListener('beforeunload', onUnload)
   }
 
   setActiveTool(toolName: string) {
@@ -350,7 +357,7 @@ export class VektorEngine {
           thinning: thinningCfg,
           jitter: { amplitude: this.jitter.amplitude, frequency: this.jitter.frequency, domain: this.jitter.domain, smooth, seed: (Date.now() & 0xffffffff) >>> 0 },
           streamline: this.freehand.streamline,
-          preview: { decimatePx: previewDecimatePx, minMs: previewMinMs },
+          preview: { decimatePx: previewDecimatePx, minMs: this.previewMinMsOverride ?? previewMinMs },
         })
       }
     }
@@ -388,6 +395,23 @@ export class VektorEngine {
     this.applyStyleToTools()
   }
   getPreviewQuality() { return this.previewQuality }
+  // --- Latency experiment API ---
+  setLowLatencyMode(on: boolean) {
+    const next = !!on
+    if (this.lowLatency === next && (this.previewMinMsOverride !== null) === next) return
+    this.lowLatency = next
+    // Faster preview cadence when on
+    this.previewMinMsOverride = this.lowLatency ? 8 : null
+    // Recreate input capture with rawupdate when toggled
+    try { this.inputCaptureDispose?.() } catch {}
+    if (this._onSamplesBound) {
+      const cap = createInputCapture(this.app.canvas, this._onSamplesBound as any, { relativeToTarget: true, usePointerRawUpdate: this.lowLatency })
+      this.inputCaptureDispose = () => cap.dispose()
+    }
+    // Re-apply styles to update preview cadence
+    this.applyStyleToTools()
+  }
+  getLowLatencyMode() { return this.lowLatency }
 
   setFreehandParams(params: { thinning?: number; smoothing?: number; streamline?: number }) {
     if (typeof params.thinning === 'number') this.freehand.thinning = Math.max(-1, Math.min(1, params.thinning))

@@ -18,6 +18,8 @@ export interface InputSample {
 export interface InputOptions {
   // Coordenadas relativas al elemento objetivo (default) o absolutas en client space
   relativeToTarget?: boolean
+  // Usar eventos de alta frecuencia "pointerrawupdate" en lugar de "pointermove" (Chromium)
+  usePointerRawUpdate?: boolean
 }
 
 export type SamplesCallback = (pointerId: number, samples: InputSample[], phase: PointerPhase, rawEvent: PointerEvent) => void
@@ -100,11 +102,13 @@ export function createInputCapture(
 
   const down = (e: Event) => onDown(e as PointerEvent)
   const move = (e: Event) => onMove(e as PointerEvent)
+  const raw = (e: Event) => onMove(e as PointerEvent)
   const up = (e: Event) => onUpOrCancel(e as PointerEvent, 'end')
   const cancel = (e: Event) => onUpOrCancel(e as PointerEvent, 'cancel')
 
   targetAdd('pointerdown', down)
-  targetAdd('pointermove', move)
+  if (options.usePointerRawUpdate) targetAdd('pointerrawupdate', raw)
+  else targetAdd('pointermove', move)
   targetAdd('pointerup', up)
   targetAdd('pointercancel', cancel)
   targetAdd('lostpointercapture', cancel)
@@ -112,7 +116,8 @@ export function createInputCapture(
   return {
     dispose() {
       targetRemove('pointerdown', down)
-      targetRemove('pointermove', move)
+      if (options.usePointerRawUpdate) targetRemove('pointerrawupdate', raw)
+      else targetRemove('pointermove', move)
       targetRemove('pointerup', up)
       targetRemove('pointercancel', cancel)
       targetRemove('lostpointercapture', cancel)
