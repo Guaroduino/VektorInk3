@@ -41,6 +41,12 @@ export class VektorEngine {
   }
   // Pressure sensitivity enabled by default
   private pressureSensitivity: boolean = true
+  // Jitter (width randomization)
+  private jitter = {
+    amplitude: 0,       // 0..1 fraction of width
+    frequency: 0.005,   // cycles per pixel of arclength or per ms when time-based
+    domain: 'distance' as 'distance' | 'time',
+  }
 
   constructor() {
     // Núcleo Pixi (se termina de inicializar en init())
@@ -260,13 +266,27 @@ export class VektorEngine {
     for (const key of Object.keys(this.tools) as ToolKey[]) {
       const t = this.tools[key]
       if (t && typeof t.setStyle === 'function') {
+        // Map legacy freehand.thinning [-1..1] to speed-based thinning config
+  const thinVal = this.freehand.thinning
+  const strength = Math.max(0, Math.min(1, Math.abs(thinVal)))
+  const invert = thinVal < 0
+  const minSpeedScale = 1 - 0.75 * strength // 1 -> no thinning, 0.25 at max
+  const exponent = 1 + 2 * strength // 1..3
+  const speedRefPxPerMs = 0.3 // lower ref -> more visible effect
+  // Map smoothing (0..1) to a small window and EMA smoothing
+  const smooth = Math.max(0, Math.min(1, this.freehand.smoothing))
+  const window = 1 + Math.round(smooth * 2) // 1..3 samples to avoid over-smoothing speed
+  const thinningCfg = { minSpeedScale, exponent, speedRefPxPerMs, window, smooth, invert }
+
         t.setStyle({
           strokeSize: this.strokeSize,
           strokeColor: this.strokeColor,
           opacity: this.opacity,
           blendMode: this.blendMode,
-          freehand: { ...this.freehand },
           pressureSensitivity: this.pressureSensitivity,
+          thinning: thinningCfg,
+          jitter: { amplitude: this.jitter.amplitude, frequency: this.jitter.frequency, domain: this.jitter.domain, smooth, seed: (Date.now() & 0xffffffff) >>> 0 },
+          streamline: this.freehand.streamline,
         })
       }
     }
@@ -312,6 +332,15 @@ export class VektorEngine {
     this.applyStyleToTools()
   }
   getPressureSensitivity() { return this.pressureSensitivity }
+
+  // --- Jitter API ---
+  setJitterParams(params: { amplitude?: number; frequency?: number; domain?: 'distance' | 'time' }) {
+    if (typeof params.amplitude === 'number') this.jitter.amplitude = Math.max(0, Math.min(1, params.amplitude))
+    if (typeof params.frequency === 'number') this.jitter.frequency = Math.max(0, params.frequency)
+    if (params.domain === 'distance' || params.domain === 'time') this.jitter.domain = params.domain
+    this.applyStyleToTools()
+  }
+  getJitterParams() { return { ...this.jitter } }
 
   setBackgroundColor(color: number) {
     this.backgroundColor = color >>> 0

@@ -22,7 +22,9 @@ export class LapizVectorTool {
   private widthScaleRange: [number, number] = [0.5, 1.0]
   private opacityRange: [number, number] = [0.5, 1.0]
   private thinning: { minSpeedScale?: number; speedRefPxPerMs?: number; window?: number; exponent?: number } | undefined = undefined
-  private jitter: { amplitude?: number; frequency?: number; seed?: number } | undefined = undefined
+  private jitter: { amplitude?: number; frequency?: number; seed?: number; smooth?: number; domain?: 'distance' | 'time' } | undefined = undefined
+  private streamline: number = 0
+  private usingPerVertexAlpha = false
 
   setStyle(styleOrSize: any, color?: number) {
     if (typeof styleOrSize === 'object') {
@@ -45,7 +47,8 @@ export class LapizVectorTool {
       if (s.widthScaleRange) this.widthScaleRange = s.widthScaleRange
       if (s.opacityRange) this.opacityRange = s.opacityRange
       if (s.thinning) this.thinning = { ...s.thinning }
-      if (s.jitter) this.jitter = { ...s.jitter }
+  if (s.jitter) this.jitter = { ...s.jitter }
+  if (typeof (s as any).streamline === 'number') this.streamline = Math.max(0, Math.min(1, (s as any).streamline))
     } else {
       this.widthBase = Math.max(1, styleOrSize)
       this.strokeColor = (color ?? this.strokeColor) >>> 0
@@ -62,6 +65,7 @@ export class LapizVectorTool {
       opacityRange: this.opacityRange,
       thinning: this.thinning,
       jitter: this.jitter,
+      streamline: this.streamline,
     }
   }
 
@@ -80,6 +84,7 @@ export class LapizVectorTool {
     ;(geom as any).vertexCount = 0
     layer.addChild(mesh)
     this.previewMesh = mesh
+    this.usingPerVertexAlpha = false
   }
 
   update(samples: InputSample[]) {
@@ -100,28 +105,36 @@ export class LapizVectorTool {
       this.previewMesh.visible = false
       return
     }
-    if ((this.pressureMode === 'opacity' || this.pressureMode === 'both') && factors.opacityFactor) {
+    const wantPerVertex = (this.pressureMode === 'opacity' || this.pressureMode === 'both') && !!factors.opacityFactor
+    if (wantPerVertex) {
       // Build per-vertex alpha attribute (duplicate per centerline point into its two vertices)
-      const fa = factors.opacityFactor
+      const fa = factors.opacityFactor as Float32Array
       const n = fa.length
       const aAlpha = new Float32Array(n * 2)
       for (let i = 0; i < n; i++) { aAlpha[2 * i] = fa[i]; aAlpha[2 * i + 1] = fa[i] }
-      const newGeom = new MeshGeometry({ positions: strip.positions, uvs: strip.uvs, indices: strip.indices }) as any
-      if (typeof newGeom.addAttribute === 'function') {
-        newGeom.addAttribute('aAlpha', aAlpha, 1)
+      const g: any = this.previewMesh.geometry
+      // Ensure we have the attribute; calling addAttribute again should replace the buffer in Pixi v8
+      if (typeof g.addAttribute === 'function') {
+        g.addAttribute('aAlpha', aAlpha, 1)
       }
-      // swap geometry to ensure attribute exists
-      this.previewMesh.geometry = newGeom
+      // Update built-in buffers in place
+      g.buffers[0].data = strip.positions
+      g.buffers[0].update()
+      g.buffers[1].data = strip.uvs
+      g.buffers[1].update()
+      g.indexBuffer.data = strip.indices
+      g.indexBuffer.update()
       ;(this.previewMesh as any).size = strip.indices.length
-      ;(newGeom as any).vertexCount = strip.positions.length / 2
+      ;(g as any).vertexCount = strip.positions.length / 2
       // attach or update shader
-      if (!(this.previewMesh as any).shader || !(this.previewMesh as any).shader.resources?.uTint) {
+      if (!this.usingPerVertexAlpha || !(this.previewMesh as any).shader || !(this.previewMesh as any).shader.resources?.uTint) {
         ;(this.previewMesh as any).shader = createAlphaStripShader(this.strokeColor, this.opacity)
       } else {
         updateAlphaStripShader((this.previewMesh as any).shader, this.strokeColor, this.opacity)
       }
       // Avoid double alpha: keep mesh alpha at 1.0 and use shader's global alpha
       this.previewMesh.alpha = 1.0
+      this.usingPerVertexAlpha = true
     } else {
       // default shader path (no per-vertex alpha)
       geom.buffers[0].data = strip.positions
@@ -138,6 +151,7 @@ export class LapizVectorTool {
       if ((this.previewMesh as any).shader && (this.previewMesh as any).shader.resources?.uTint) {
         ;(this.previewMesh as any).shader = undefined
       }
+      this.usingPerVertexAlpha = false
     }
     this.previewMesh.visible = true
   }
@@ -147,6 +161,8 @@ export class LapizVectorTool {
       // Limpia preview si existe
       this.previewMesh?.destroy({ children: true })
       this.previewMesh = null
+      this.container = null
+      this.points = []
       return null
     }
     const { strip, factors } = buildStrokeStrip(this.points as any, this._builderParams())

@@ -25,6 +25,7 @@ export const Toolbar: React.FC = () => {
   const [blend, setBlend] = useState(() => engine.getBlendMode?.() ?? 'normal')
   const [fh, setFh] = useState(() => engine.getFreehandParams?.() ?? { thinning: 0.6, smoothing: 0.6, streamline: 0.5 })
   const [pressureEnabled, setPressureEnabled] = useState(() => engine.getPressureSensitivity?.() ?? true)
+  const [jitter, setJitter] = useState(() => engine.getJitterParams?.() ?? { amplitude: 0, frequency: 0.005, domain: 'distance' as 'distance' | 'time' })
 
   const handleToolClick = (toolName: ToolName) => {
     engine.setActiveTool(toolName)
@@ -62,6 +63,18 @@ export const Toolbar: React.FC = () => {
   const onPressureToggle = (v: boolean) => {
     setPressureEnabled(v)
     engine.setPressureSensitivity?.(v)
+  }
+
+  const onJitterChange = (key: 'amplitude' | 'frequency', v: number) => {
+    const next = { ...jitter, [key]: v }
+    setJitter(next)
+    engine.setJitterParams?.(next)
+  }
+  const onJitterDomainToggle = (distanceBased: boolean) => {
+    const domain: 'distance' | 'time' = distanceBased ? 'distance' : 'time'
+    const next = { ...jitter, domain }
+    setJitter(next)
+    engine.setJitterParams?.(next)
   }
 
   // Mantener la UI en sync cuando se usa el teclado (1-4)
@@ -217,6 +230,37 @@ export const Toolbar: React.FC = () => {
                 className="w-36 accent-blue-500" />
               <span className="text-xs tabular-nums w-12 text-right opacity-80">{fh.streamline.toFixed(2)}</span>
             </label>
+            {/* Clarificación de efectos */}
+            <div className="text-[10px] text-gray-500 leading-tight mt-1">
+              <div><strong>Smoothing</strong>: suaviza cambios de grosor por velocidad y el jitter.</div>
+              <div><strong>Streamline</strong>: suaviza la trayectoria (menos vibración) antes de generar el grosor.</div>
+            </div>
+          </div>
+
+          {/* Jitter (ancho aleatorio) */}
+          <div className="flex flex-col gap-1.5 bg-gray-50 rounded-md p-2 border border-gray-200">
+            <span className="text-xs opacity-80">Width Jitter</span>
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={jitter.domain === 'distance'} onChange={(e) => onJitterDomainToggle(e.target.checked)} />
+              <span className="text-xs opacity-80" title="Distance: varía a lo largo del trazo. Time: varía con el tiempo.">Distance-based</span>
+            </label>
+            <label className="flex items-center gap-2">
+              <span className="text-xs w-16 opacity-80">Amount</span>
+              <input type="range" min={0} max={0.8} step={0.01} value={jitter.amplitude}
+                onChange={(e) => onJitterChange('amplitude', Number(e.target.value))}
+                className="w-36 accent-blue-500" />
+              <span className="text-xs tabular-nums w-12 text-right opacity-80">{jitter.amplitude.toFixed(2)}</span>
+            </label>
+            <label className="flex items-center gap-2">
+              <span className="text-xs w-16 opacity-80">Freq</span>
+              <input type="range" min={0} max={0.02} step={0.0005} value={jitter.frequency}
+                onChange={(e) => onJitterChange('frequency', Number(e.target.value))}
+                className="w-36 accent-blue-500" />
+              <span className="text-xs tabular-nums w-28 text-right opacity-80">{jitter.frequency.toFixed(4)} {jitter.domain === 'distance' ? 'cyc/px' : 'cyc/ms'}</span>
+            </label>
+            <div className="text-[10px] text-gray-500 leading-tight mt-1">
+              <div>El <strong>suavizado del jitter</strong> usa el control Freehand → Smoothing.</div>
+            </div>
           </div>
         </div>
       )}

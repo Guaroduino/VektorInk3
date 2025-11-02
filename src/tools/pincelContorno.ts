@@ -22,9 +22,13 @@ export class PincelContornoTool {
   private widthScaleRange: [number, number] = [0.5, 1.0]
   private opacityRange: [number, number] = [0.5, 1.0]
   private thinning: { minSpeedScale?: number; speedRefPxPerMs?: number; window?: number; exponent?: number } | undefined = undefined
-  private jitter: { amplitude?: number; frequency?: number; seed?: number } | undefined = undefined
+  private jitter: { amplitude?: number; frequency?: number; seed?: number; smooth?: number; domain?: 'distance' | 'time' } | undefined = undefined
+  private streamline: number = 0
   private _seq = 0
   private _pending = false
+  private _strokeToken = 0
+  private _lastTessTime = 0
+  private _accumDist = 0
 
   setStyle(styleOrSize: any, color?: number) {
     if (typeof styleOrSize === 'object') {
@@ -47,7 +51,8 @@ export class PincelContornoTool {
       if (s.widthScaleRange) this.widthScaleRange = s.widthScaleRange
       if (s.opacityRange) this.opacityRange = s.opacityRange
       if (s.thinning) this.thinning = { ...s.thinning }
-      if (s.jitter) this.jitter = { ...s.jitter }
+  if (s.jitter) this.jitter = { ...s.jitter }
+  if (typeof (s as any).streamline === 'number') this.streamline = Math.max(0, Math.min(1, (s as any).streamline))
     } else {
       this.strokeSize = styleOrSize
       this.strokeColor = (color ?? this.strokeColor) >>> 0
@@ -67,11 +72,33 @@ export class PincelContornoTool {
     layer.addChild(mesh)
   this.previewMesh = mesh
   this.points = []
+  this._seq = 0
+  this._pending = false
+  this._strokeToken++
+  this._lastTessTime = 0
+  this._accumDist = 0
   }
 
   update(samples: InputSample[]) {
-    for (const s of samples) this.points.push({ x: s.x, y: s.y, pressure: s.pressure, time: s.time })
+    // accumulate and throttle heavy tessellation
+    if (samples.length) {
+      if (this.points.length) {
+        let prev = this.points[this.points.length - 1]
+        for (const s of samples) {
+          const dx = s.x - prev.x
+          const dy = s.y - prev.y
+          this._accumDist += Math.hypot(dx, dy)
+          prev = { x: s.x, y: s.y }
+        }
+      }
+      for (const s of samples) this.points.push({ x: s.x, y: s.y, pressure: s.pressure, time: s.time })
+    }
     if (!this.previewMesh) return
+    const now = performance.now ? performance.now() : Date.now()
+    if (this._pending) return
+    if (now - this._lastTessTime < 16 && this._accumDist < 6) return
+    this._lastTessTime = now
+    this._accumDist = 0
     // Build polygon and tessellate in preview to avoid opacity accumulation
     const { outlines } = buildStrokeStrip(this.points as any, this._builderParams())
     const polyF32 = buildOuterPolygon(outlines.left, outlines.right, true)
@@ -91,11 +118,13 @@ export class PincelContornoTool {
     const poly: { x: number; y: number }[] = []
     for (let i = 0; i < polyF32.length - 2; i += 2) poly.push({ x: polyF32[i], y: polyF32[i + 1] })
     const seq = ++this._seq
+    const token = this._strokeToken
     if (this._pending) return
     this._pending = true
     triangulateWithTess2Async([poly], 'nonzero').then(({ positions, indices }) => {
       this._pending = false
       if (!this.previewMesh) return
+      if (token !== this._strokeToken) return
       if (seq !== this._seq) return
       if (!positions || !indices || indices.length < 3) {
         geom.buffers[0].data = new Float32Array(0)
@@ -176,6 +205,7 @@ export class PincelContornoTool {
       opacityRange: this.opacityRange,
       thinning: this.thinning,
       jitter: this.jitter,
+      streamline: this.streamline,
     }
   }
 }

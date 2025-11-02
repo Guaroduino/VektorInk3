@@ -19,6 +19,10 @@ export interface ThinningConfig {
   window?: number
   // Exponent to shape the curve (>= 1). Higher => stronger thinning at high speeds.
   exponent?: number
+  // Additional EMA smoothing strength (0..1) applied to the computed speed-based width factor across the stroke.
+  smooth?: number
+  // If true, invert the mapping: fast strokes become thicker (instead of thinner).
+  invert?: boolean
 }
 
 export interface JitterConfig {
@@ -28,6 +32,10 @@ export interface JitterConfig {
   frequency?: number
   // Seed for deterministic jitter per stroke.
   seed?: number
+  // Domain to drive jitter progression: 'distance' (arclength) or 'time' (elapsed ms)
+  domain?: 'distance' | 'time'
+  // EMA smoothing strength (0..1) applied to the jitter factor progression (higher -> smoother, slower changes)
+  smooth?: number
 }
 
 export interface StrokeBuilderParams {
@@ -43,6 +51,8 @@ export interface StrokeBuilderParams {
   thinning?: ThinningConfig
   // Random width variation
   jitter?: JitterConfig
+  // Streamline: input point smoothing (0..1). 0 = raw, 1 = heavily smoothed.
+  streamline?: number
 }
 
 export interface StripGeometry {
@@ -109,6 +119,20 @@ function computeArclength(points: StrokePoint[]): Float32Array {
   return s
 }
 
+function computeCumTime(points: StrokePoint[]): Float32Array {
+  const n = points.length
+  const tArr = new Float32Array(n)
+  let t0 = typeof points[0]?.time === 'number' ? (points[0].time as number) : 0
+  tArr[0] = 0
+  for (let i = 1; i < n; i++) {
+    const ti = typeof points[i].time === 'number' ? (points[i].time as number) : i
+    const tPrev = typeof points[i - 1].time === 'number' ? (points[i - 1].time as number) : (i - 1)
+    const dt = Math.max(0, ti - tPrev)
+    tArr[i] = tArr[i - 1] + dt
+  }
+  return tArr
+}
+
 function computeSpeedNorm(points: StrokePoint[], arclength: Float32Array, cfg?: ThinningConfig): Float32Array {
   const n = points.length
   const out = new Float32Array(n)
@@ -165,6 +189,19 @@ function computeWidthAndOpacityFactors(
   const seed = (jitter?.seed ?? 0) >>> 0
   const amp = clamp(jitter?.amplitude ?? 0, 0, 1)
   const freq = Math.max(0, jitter?.frequency ?? 0)
+  const domain = jitter?.domain ?? 'distance'
+  const tCum = domain === 'time' ? computeCumTime(points) : undefined
+
+  // Pre-calc jitter smoothing coefficient (EMA alpha)
+  const jitterSmooth = clamp(jitter?.smooth ?? 0, 0, 1)
+  const jitterAlpha = 1 - 0.85 * jitterSmooth // more smoothing -> smaller alpha
+
+  // Pre-calc thinning EMA on width factor if requested
+  const thinSmooth = clamp(thinning?.smooth ?? 0, 0, 1)
+  const thinAlpha = 1 - 0.85 * thinSmooth
+
+  let prevJitterFactor = 1.0
+  let prevSpeedWidth = 1.0
 
   for (let i = 0; i < n; i++) {
     const p = clamp(points[i].pressure ?? 0.5, 0, 1)
@@ -177,14 +214,24 @@ function computeWidthAndOpacityFactors(
     // Speed thinning factor (1 at slow, approaches minSpeedScale at very fast)
     const sN = clamp(speedNorm[i], 0, 1)
     const t = Math.pow(sN, exp)
-    const speedWidth = lerp(1.0, minSpeedScale, t)
+  // Map speed to width scale; invert if requested
+  let speedWidth = thinning?.invert ? lerp(minSpeedScale, 1.0, t) : lerp(1.0, minSpeedScale, t)
+  // EMA smooth for speed-based width factor
+  if (thinSmooth > 0 && i > 0) speedWidth = prevSpeedWidth + (speedWidth - prevSpeedWidth) * thinAlpha
+  prevSpeedWidth = speedWidth
 
     // Jitter factor based on arclength
     let jitterFactor = 1.0
     if (amp > 0 && freq > 0) {
-      const cyc = arclength[i] * freq // cycles
+      const param = domain === 'time' ? (tCum as Float32Array)[i] : arclength[i]
+      const cyc = param * freq // cycles
       const j = noise1D(seed, cyc) // [-1,1]
-      jitterFactor = 1 + amp * j
+      const raw = 1 + amp * j
+      if (jitterSmooth > 0 && i > 0) {
+        jitterFactor = prevJitterFactor + (raw - prevJitterFactor) * jitterAlpha
+      } else {
+        jitterFactor = raw
+      }
     }
 
     widthFactor[i] = pressWidth * speedWidth * jitterFactor
@@ -226,7 +273,7 @@ function buildStrip(left: Float32Array, right: Float32Array): StripGeometry {
   if (n < 2) {
     return {
       positions: new Float32Array(),
-      indices: new Uint32Array(),
+      indices: new Uint16Array() as any,
       uvs: new Float32Array(),
     }
   }
@@ -239,7 +286,10 @@ function buildStrip(left: Float32Array, right: Float32Array): StripGeometry {
     positions[off + 2] = right[i * 2 + 0]
     positions[off + 3] = right[i * 2 + 1]
   }
-  const indices = new Uint32Array((n - 1) * 6)
+  const triCount = (n - 1) * 2
+  const indexCount = triCount * 3
+  const useU16 = n * 2 <= 65535 && indexCount <= 65535
+  const indices = (useU16 ? new Uint16Array(indexCount) : new Uint32Array(indexCount)) as any
   for (let i = 0; i < n - 1; i++) {
     const i0 = i * 2
     const i1 = i * 2 + 1
@@ -293,11 +343,30 @@ export function buildStrokeStrip(points: StrokePoint[], params: StrokeBuilderPar
     }
   }
 
+  // Optionally streamline the path (EMA smoothing of positions)
+  const streamline = clamp(params.streamline ?? 0, 0, 1)
+  let pts = points
+  if (streamline > 0) {
+    const alpha = 1 - 0.85 * streamline
+    const out: StrokePoint[] = new Array(n)
+    // first sample unchanged
+    out[0] = { ...points[0] }
+    for (let i = 1; i < n; i++) {
+      const prev = out[i - 1]
+      const cur = points[i]
+      const x = prev.x + (cur.x - prev.x) * alpha
+      const y = prev.y + (cur.y - prev.y) * alpha
+      // keep pressure/time from current sample to preserve dynamics
+      out[i] = { x, y, pressure: cur.pressure, time: cur.time }
+    }
+    pts = out
+  }
+
   // Path arclength for jitter + speed estimation
-  const s = computeArclength(points)
+  const s = computeArclength(pts)
 
   // Compute per-point factors
-  const { widthFactor, opacityFactor } = computeWidthAndOpacityFactors(points, params, s)
+  const { widthFactor, opacityFactor } = computeWidthAndOpacityFactors(pts, params, s)
 
   // Convert to half-width in pixels
   const half = new Float32Array(n)
@@ -309,7 +378,7 @@ export function buildStrokeStrip(points: StrokePoint[], params: StrokeBuilderPar
   }
 
   // Build outlines
-  const { left, right } = buildOffsets(points, half)
+  const { left, right } = buildOffsets(pts, half)
 
   // Build interleaved strip
   const strip = buildStrip(left, right)
