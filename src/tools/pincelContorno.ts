@@ -1,9 +1,8 @@
 import { Container, Mesh, MeshGeometry, Texture } from 'pixi.js'
-import getStroke from 'perfect-freehand'
 import simplify from 'simplify-js'
 import type { InputSample } from '../input'
 import { triangulateWithTess2Async } from '../geom/tessWorkerClient'
-import { cleanOutline } from '../geom/clean'
+import { buildStrokeStrip, buildOuterPolygon, type PressureMode, type StrokeBuilderParams } from '../geom/strokeBuilder'
 
 /**
  * Pincel de Contorno (Vectorial Editable)
@@ -12,13 +11,18 @@ import { cleanOutline } from '../geom/clean'
  */
 export class PincelContornoTool {
   private previewMesh: Mesh | null = null
-  private points: { x: number; y: number; pressure?: number }[] = []
+  private points: { x: number; y: number; pressure?: number; time?: number }[] = []
   private strokeSize = 10
   private strokeColor = 0xffffff
   private opacity = 1.0
   private blendMode: any = 'normal'
-  private freehand = { thinning: 0.0, smoothing: 0.6, streamline: 0.4 }
-  private _armed = false
+  private pressureSensitivity = true
+  private pressureMode: PressureMode = 'width'
+  private pressureCurve: 'linear' | 'sqrt' | 'square' | { exponent: number } = 'linear'
+  private widthScaleRange: [number, number] = [0.5, 1.0]
+  private opacityRange: [number, number] = [0.5, 1.0]
+  private thinning: { minSpeedScale?: number; speedRefPxPerMs?: number; window?: number; exponent?: number } | undefined = undefined
+  private jitter: { amplitude?: number; frequency?: number; seed?: number } | undefined = undefined
   private _seq = 0
   private _pending = false
 
@@ -26,17 +30,24 @@ export class PincelContornoTool {
     if (typeof styleOrSize === 'object') {
       const s = styleOrSize as {
         strokeSize?: number; strokeColor?: number; opacity?: number; blendMode?: string;
-        freehand?: { thinning?: number; smoothing?: number; streamline?: number }
+        pressureSensitivity?: boolean; pressureMode?: PressureMode;
+        pressureCurve?: 'linear' | 'sqrt' | 'square' | { exponent: number }
+        widthScaleRange?: [number, number]
+        opacityRange?: [number, number]
+        thinning?: { minSpeedScale?: number; speedRefPxPerMs?: number; window?: number; exponent?: number }
+        jitter?: { amplitude?: number; frequency?: number; seed?: number }
       }
       if (typeof s.strokeSize === 'number') this.strokeSize = s.strokeSize
       if (typeof s.strokeColor === 'number') this.strokeColor = s.strokeColor >>> 0
       if (typeof s.opacity === 'number') this.opacity = s.opacity
       if (typeof s.blendMode === 'string') this.blendMode = s.blendMode as any
-      if (s.freehand) {
-        this.freehand.thinning = s.freehand.thinning ?? this.freehand.thinning
-        this.freehand.smoothing = s.freehand.smoothing ?? this.freehand.smoothing
-        this.freehand.streamline = s.freehand.streamline ?? this.freehand.streamline
-      }
+      if (typeof s.pressureSensitivity === 'boolean') this.pressureSensitivity = s.pressureSensitivity
+      if (s.pressureMode) this.pressureMode = s.pressureMode
+      if (s.pressureCurve) this.pressureCurve = s.pressureCurve
+      if (s.widthScaleRange) this.widthScaleRange = s.widthScaleRange
+      if (s.opacityRange) this.opacityRange = s.opacityRange
+      if (s.thinning) this.thinning = { ...s.thinning }
+      if (s.jitter) this.jitter = { ...s.jitter }
     } else {
       this.strokeSize = styleOrSize
       this.strokeColor = (color ?? this.strokeColor) >>> 0
@@ -54,24 +65,18 @@ export class PincelContornoTool {
     ;(geom as any).vertexCount = 0
     mesh.visible = false
     layer.addChild(mesh)
-    this.previewMesh = mesh
-    this.points = []
-    this._armed = false
+  this.previewMesh = mesh
+  this.points = []
   }
 
-  // Pipeline con tess2 (worker) para reducir artefactos
-
   update(samples: InputSample[]) {
-    for (const s of samples) this.points.push({ x: s.x, y: s.y, pressure: s.pressure })
-
+    for (const s of samples) this.points.push({ x: s.x, y: s.y, pressure: s.pressure, time: s.time })
     if (!this.previewMesh) return
-    const outline = getStroke(
-      this.points.map((p) => [p.x, p.y]) as [number, number][],
-      { size: this.strokeSize, thinning: this.freehand.thinning, smoothing: this.freehand.smoothing, streamline: this.freehand.streamline }
-    )
+    // Build polygon and tessellate in preview to avoid opacity accumulation
+    const { outlines } = buildStrokeStrip(this.points as any, this._builderParams())
+    const polyF32 = buildOuterPolygon(outlines.left, outlines.right, true)
     const geom = this.previewMesh.geometry
-    if (outline.length < 6) {
-      // limpiar buffers y draw sizes para evitar GL errores
+    if (polyF32.length < 6) {
       geom.buffers[0].data = new Float32Array(0)
       geom.buffers[0].update()
       geom.buffers[1].data = new Float32Array(0)
@@ -83,14 +88,16 @@ export class PincelContornoTool {
       this.previewMesh.visible = false
       return
     }
-
-    // Descarta polígonos diminutos que generan triángulos extraños
-    {
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-      for (const [x, y] of outline) { if (x < minX) minX = x; if (y < minY) minY = y; if (x > maxX) maxX = x; if (y > maxY) maxY = y }
-      const w = maxX - minX, h = maxY - minY
-      const diag = Math.hypot(w, h)
-      if (!isFinite(diag) || diag < Math.max(4, this.strokeSize * 0.8)) {
+    const poly: { x: number; y: number }[] = []
+    for (let i = 0; i < polyF32.length - 2; i += 2) poly.push({ x: polyF32[i], y: polyF32[i + 1] })
+    const seq = ++this._seq
+    if (this._pending) return
+    this._pending = true
+    triangulateWithTess2Async([poly], 'nonzero').then(({ positions, indices }) => {
+      this._pending = false
+      if (!this.previewMesh) return
+      if (seq !== this._seq) return
+      if (!positions || !indices || indices.length < 3) {
         geom.buffers[0].data = new Float32Array(0)
         geom.buffers[0].update()
         geom.buffers[1].data = new Float32Array(0)
@@ -102,67 +109,41 @@ export class PincelContornoTool {
         this.previewMesh.visible = false
         return
       }
-    }
-    const contour = cleanOutline(outline.map(([x, y]) => ({ x, y })), this.strokeSize)
-    if (contour.length < 3) {
-      geom.buffers[0].data = new Float32Array(0)
+      const uvs = new Float32Array((positions.length / 2) * 2)
+      geom.buffers[0].data = positions
       geom.buffers[0].update()
-      geom.buffers[1].data = new Float32Array(0)
+      geom.buffers[1].data = uvs
       geom.buffers[1].update()
-      geom.indexBuffer.data = new Uint32Array(0)
+      geom.indexBuffer.data = indices
       geom.indexBuffer.update()
-      ;(this.previewMesh as any).size = 0
-      ;(geom as any).vertexCount = 0
-      this.previewMesh.visible = false
-      this._armed = false
-      return
-    }
-    const seq = ++this._seq
-    if (this._pending) return
-    this._pending = true
-    triangulateWithTess2Async([contour], 'nonzero')
-      .then(({ positions, indices }) => {
-        this._pending = false
-        if (!this.previewMesh) return
-        if (seq !== this._seq) return
-        if (!positions || !indices || indices.length < 3 || positions.length < 6) {
-          geom.buffers[0].data = new Float32Array(0)
-          geom.buffers[0].update()
-          geom.buffers[1].data = new Float32Array(0)
-          geom.buffers[1].update()
-          geom.indexBuffer.data = new Uint32Array(0)
-          geom.indexBuffer.update()
-          ;(this.previewMesh as any).size = 0
-          ;(geom as any).vertexCount = 0
-          this.previewMesh!.visible = false
-          this._armed = false
-          return
-        }
-        const uvs = new Float32Array((positions.length / 2) * 2)
-        geom.buffers[0].data = positions
-        geom.buffers[0].update()
-        geom.buffers[1].data = uvs
-        geom.buffers[1].update()
-        geom.indexBuffer.data = indices
-        geom.indexBuffer.update()
-        ;(this.previewMesh as any).size = indices.length
-        ;(geom as any).vertexCount = positions.length / 2
-        this.previewMesh!.visible = true
-        this._armed = true
-      })
-      .catch(() => {
-        this._pending = false
-      })
+      ;(this.previewMesh as any).size = indices.length
+      ;(geom as any).vertexCount = positions.length / 2
+      this.previewMesh.visible = true
+      this.previewMesh.alpha = this.opacity
+    }).catch(() => { this._pending = false })
   }
 
   async end(layer: Container) {
-    const outline = getStroke(
-      this.points.map((p) => [p.x, p.y]) as [number, number][],
-      { size: this.strokeSize, thinning: this.freehand.thinning, smoothing: this.freehand.smoothing, streamline: this.freehand.streamline }
-    )
+    if (this.points.length < 2) {
+      this.previewMesh?.destroy({ children: true })
+      this.previewMesh = null
+      this.points = []
+      return { graphic: null as any, controlPoints: [] }
+    }
 
-    // Simplifica contorno para puntos de control
-  const poly = cleanOutline(outline.map(([x, y]) => ({ x, y })), this.strokeSize)
+    const result = buildStrokeStrip(this.points as any, this._builderParams())
+    // Build polygon from outlines
+    const polyF32 = buildOuterPolygon(result.outlines.left, result.outlines.right, true)
+    if (polyF32.length < 6) {
+      this.previewMesh?.destroy({ children: true })
+      this.previewMesh = null
+      this.points = []
+      return { graphic: null as any, controlPoints: [] }
+    }
+    const poly = [] as { x: number; y: number }[]
+    for (let i = 0; i < polyF32.length - 2; i += 2) { // last two repeat first when closed
+      poly.push({ x: polyF32[i], y: polyF32[i + 1] })
+    }
     const simplified = simplify(poly, 2.0, true)
     const { positions, indices } = await triangulateWithTess2Async([poly], 'nonzero')
     const finalGeom = new MeshGeometry({
@@ -170,10 +151,10 @@ export class PincelContornoTool {
       uvs: new Float32Array((positions.length / 2) * 2),
       indices,
     })
-  const finalMesh = new Mesh({ geometry: finalGeom, texture: Texture.WHITE })
-  finalMesh.tint = this.strokeColor
-  finalMesh.alpha = this.opacity
-  ;(finalMesh as any).blendMode = this.blendMode
+    const finalMesh = new Mesh({ geometry: finalGeom, texture: Texture.WHITE })
+    finalMesh.tint = this.strokeColor
+    finalMesh.alpha = this.opacity
+    ;(finalMesh as any).blendMode = this.blendMode
     layer.addChild(finalMesh)
     ;(finalMesh as any).size = indices.length
     ;(finalGeom as any).vertexCount = positions.length / 2
@@ -183,5 +164,18 @@ export class PincelContornoTool {
     this.points = []
 
     return { graphic: finalMesh, controlPoints: simplified }
+  }
+
+  private _builderParams(): StrokeBuilderParams {
+    return {
+      baseWidth: this.strokeSize,
+      pressureSensitivity: this.pressureSensitivity,
+      pressureMode: this.pressureMode,
+      pressureCurve: this.pressureCurve,
+      widthScaleRange: this.widthScaleRange,
+      opacityRange: this.opacityRange,
+      thinning: this.thinning,
+      jitter: this.jitter,
+    }
   }
 }

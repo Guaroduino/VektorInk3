@@ -1,5 +1,7 @@
 import { Container, Mesh, MeshGeometry, Texture } from 'pixi.js'
 import type { InputSample } from '../input'
+import { buildStrokeStrip, type StrokeBuilderParams, type PressureMode } from '../geom/strokeBuilder'
+import { createAlphaStripShader, updateAlphaStripShader } from '../graphics/alphaStripShader'
 
 /**
  * Lápiz Vectorial (No Editable):
@@ -9,34 +11,58 @@ import type { InputSample } from '../input'
 export class LapizVectorTool {
   private previewMesh: Mesh | null = null
   private container: Container | null = null
-  private points: { x: number; y: number; pressure?: number }[] = []
+  private points: { x: number; y: number; pressure?: number; time?: number }[] = []
   private widthBase = 6
   private strokeColor = 0xffffff
   private opacity = 0.12
   private blendMode: any = 'add'
   private pressureSensitivity = true
+  private pressureMode: PressureMode = 'width'
+  private pressureCurve: 'linear' | 'sqrt' | 'square' | { exponent: number } = 'linear'
+  private widthScaleRange: [number, number] = [0.5, 1.0]
+  private opacityRange: [number, number] = [0.5, 1.0]
+  private thinning: { minSpeedScale?: number; speedRefPxPerMs?: number; window?: number; exponent?: number } | undefined = undefined
+  private jitter: { amplitude?: number; frequency?: number; seed?: number } | undefined = undefined
 
   setStyle(styleOrSize: any, color?: number) {
     if (typeof styleOrSize === 'object') {
-      const s = styleOrSize as { strokeSize?: number; strokeColor?: number; opacity?: number; blendMode?: string }
+      const s = styleOrSize as {
+        strokeSize?: number; strokeColor?: number; opacity?: number; blendMode?: string;
+        pressureSensitivity?: boolean; pressureMode?: PressureMode;
+        pressureCurve?: 'linear' | 'sqrt' | 'square' | { exponent: number }
+        widthScaleRange?: [number, number]
+        opacityRange?: [number, number]
+        thinning?: { minSpeedScale?: number; speedRefPxPerMs?: number; window?: number; exponent?: number }
+        jitter?: { amplitude?: number; frequency?: number; seed?: number }
+      }
       if (typeof s.strokeSize === 'number') this.widthBase = Math.max(1, s.strokeSize)
       if (typeof s.strokeColor === 'number') this.strokeColor = s.strokeColor >>> 0
       if (typeof s.opacity === 'number') this.opacity = s.opacity
       if (typeof s.blendMode === 'string') this.blendMode = s.blendMode as any
-      if (typeof (styleOrSize as any).pressureSensitivity === 'boolean') this.pressureSensitivity = (styleOrSize as any).pressureSensitivity
+      if (typeof s.pressureSensitivity === 'boolean') this.pressureSensitivity = s.pressureSensitivity
+      if (s.pressureMode) this.pressureMode = s.pressureMode
+      if (s.pressureCurve) this.pressureCurve = s.pressureCurve
+      if (s.widthScaleRange) this.widthScaleRange = s.widthScaleRange
+      if (s.opacityRange) this.opacityRange = s.opacityRange
+      if (s.thinning) this.thinning = { ...s.thinning }
+      if (s.jitter) this.jitter = { ...s.jitter }
     } else {
       this.widthBase = Math.max(1, styleOrSize)
       this.strokeColor = (color ?? this.strokeColor) >>> 0
     }
   }
 
-  // Calcula media anchura (half-width) consistente para preview y trazo final
-  private _halfWidth(pressure?: number) {
-    // Normaliza presión ~[0,1], si no hay presión usa 0.5
-    const p = pressure ?? 0.5
-    // Mapear a [0.5, 1.0] para que no sea demasiado fino en baja presión
-    const scale = (p + 0.5) * 0.5 // 0.25..0.75 si p=0..0.5; 0.5..0.75.. también razonable
-    return this.widthBase * scale * 0.5 // half-width
+  private _builderParams(): StrokeBuilderParams {
+    return {
+      baseWidth: this.widthBase,
+      pressureSensitivity: this.pressureSensitivity,
+      pressureMode: this.pressureMode,
+      pressureCurve: this.pressureCurve,
+      widthScaleRange: this.widthScaleRange,
+      opacityRange: this.opacityRange,
+      thinning: this.thinning,
+      jitter: this.jitter,
+    }
   }
 
   start(layer: Container) {
@@ -57,14 +83,12 @@ export class LapizVectorTool {
   }
 
   update(samples: InputSample[]) {
-    for (const s of samples) this.points.push({ x: s.x, y: s.y, pressure: s.pressure })
+    for (const s of samples) this.points.push({ x: s.x, y: s.y, pressure: s.pressure, time: s.time })
 
-    // Actualiza preview en tiempo real
     if (!this.previewMesh) return
-    const n = this.points.length
     const geom = this.previewMesh.geometry
-    if (n < 2) {
-      // limpiar buffers cuando no hay suficientes puntos (siempre forzar contadores)
+    const { strip, factors } = buildStrokeStrip(this.points as any, this._builderParams())
+    if (strip.indices.length < 3) {
       geom.buffers[0].data = new Float32Array(0)
       geom.buffers[0].update()
       geom.buffers[1].data = new Float32Array(0)
@@ -76,49 +100,45 @@ export class LapizVectorTool {
       this.previewMesh.visible = false
       return
     }
-
-    // Recalcula la tira (listón) como en end(), pero solo para vista previa
-    const pts = this.points
-  const widthBase = this.widthBase
-    const left: number[] = []
-    const right: number[] = []
-    for (let i = 0; i < n; i++) {
-      const p = pts[i]
-      const p0 = pts[Math.max(0, i - 1)]
-      const p1 = pts[Math.min(n - 1, i + 1)]
-      const dx = p1.x - p0.x
-      const dy = p1.y - p0.y
-      const len = Math.hypot(dx, dy) || 1
-      let nx = -dy / len
-      let ny = dx / len
-  const w = this._halfWidth(this.pressureSensitivity ? p.pressure : undefined)
-      left.push(p.x + nx * w, p.y + ny * w)
-      right.push(p.x - nx * w, p.y - ny * w)
+    if ((this.pressureMode === 'opacity' || this.pressureMode === 'both') && factors.opacityFactor) {
+      // Build per-vertex alpha attribute (duplicate per centerline point into its two vertices)
+      const fa = factors.opacityFactor
+      const n = fa.length
+      const aAlpha = new Float32Array(n * 2)
+      for (let i = 0; i < n; i++) { aAlpha[2 * i] = fa[i]; aAlpha[2 * i + 1] = fa[i] }
+      const newGeom = new MeshGeometry({ positions: strip.positions, uvs: strip.uvs, indices: strip.indices }) as any
+      if (typeof newGeom.addAttribute === 'function') {
+        newGeom.addAttribute('aAlpha', aAlpha, 1)
+      }
+      // swap geometry to ensure attribute exists
+      this.previewMesh.geometry = newGeom
+      ;(this.previewMesh as any).size = strip.indices.length
+      ;(newGeom as any).vertexCount = strip.positions.length / 2
+      // attach or update shader
+      if (!(this.previewMesh as any).shader || !(this.previewMesh as any).shader.resources?.uTint) {
+        ;(this.previewMesh as any).shader = createAlphaStripShader(this.strokeColor, this.opacity)
+      } else {
+        updateAlphaStripShader((this.previewMesh as any).shader, this.strokeColor, this.opacity)
+      }
+      // Avoid double alpha: keep mesh alpha at 1.0 and use shader's global alpha
+      this.previewMesh.alpha = 1.0
+    } else {
+      // default shader path (no per-vertex alpha)
+      geom.buffers[0].data = strip.positions
+      geom.buffers[0].update()
+      geom.buffers[1].data = strip.uvs
+      geom.buffers[1].update()
+      geom.indexBuffer.data = strip.indices
+      geom.indexBuffer.update()
+      ;(this.previewMesh as any).size = strip.indices.length
+      ;(geom as any).vertexCount = strip.positions.length / 2
+      // Ensure default alpha in mesh (uniform)
+      this.previewMesh.alpha = this.opacity
+      // remove custom shader if previously assigned
+      if ((this.previewMesh as any).shader && (this.previewMesh as any).shader.resources?.uTint) {
+        ;(this.previewMesh as any).shader = undefined
+      }
     }
-
-    const positions: number[] = []
-    for (let i = 0; i < n; i++) {
-      positions.push(left[2 * i], left[2 * i + 1], right[2 * i], right[2 * i + 1])
-    }
-
-    const indices: number[] = []
-    for (let i = 0; i < n - 1; i++) {
-      const i0 = i * 2
-      const i1 = i * 2 + 1
-      const i2 = (i + 1) * 2
-      const i3 = (i + 1) * 2 + 1
-      indices.push(i0, i1, i2, i1, i3, i2)
-    }
-
-    const uvs = new Float32Array(n * 4)
-    geom.buffers[0].data = new Float32Array(positions)
-    geom.buffers[0].update()
-    geom.buffers[1].data = uvs
-    geom.buffers[1].update()
-    geom.indexBuffer.data = new Uint32Array(indices)
-    geom.indexBuffer.update()
-    ;(this.previewMesh as any).size = indices.length
-    ;(geom as any).vertexCount = positions.length / 2
     this.previewMesh.visible = true
   }
 
@@ -129,66 +149,37 @@ export class LapizVectorTool {
       this.previewMesh = null
       return null
     }
-
-    // Construye una tira (listón) con grosor dependiente de presión (muy básico)
-    const pts = this.points
-    const n = pts.length
-  const widthBase = this.widthBase
-
-    const left: number[] = []
-    const right: number[] = []
-
-    for (let i = 0; i < n; i++) {
-      const p = pts[i]
-      const p0 = pts[Math.max(0, i - 1)]
-      const p1 = pts[Math.min(n - 1, i + 1)]
-      const dx = p1.x - p0.x
-      const dy = p1.y - p0.y
-      const len = Math.hypot(dx, dy) || 1
-      // normal perpendicular
-      let nx = -dy / len
-      let ny = dx / len
-      // ancho local
-    const w = this._halfWidth(this.pressureSensitivity ? p.pressure : undefined)
-      left.push(p.x + nx * w, p.y + ny * w)
-      right.push(p.x - nx * w, p.y - ny * w)
+    const { strip, factors } = buildStrokeStrip(this.points as any, this._builderParams())
+    let geom: MeshGeometry
+    let usePerVertex = (this.pressureMode === 'opacity' || this.pressureMode === 'both') && !!factors.opacityFactor
+    if (usePerVertex && factors.opacityFactor) {
+      const fa = factors.opacityFactor
+      const n = fa.length
+      const aAlpha = new Float32Array(n * 2)
+      for (let i = 0; i < n; i++) { aAlpha[2 * i] = fa[i]; aAlpha[2 * i + 1] = fa[i] }
+      geom = new MeshGeometry({ positions: strip.positions, uvs: strip.uvs, indices: strip.indices })
+      if (typeof (geom as any).addAttribute === 'function') {
+        ;(geom as any).addAttribute('aAlpha', aAlpha, 1)
+      }
+    } else {
+      geom = new MeshGeometry({ positions: strip.positions, uvs: strip.uvs, indices: strip.indices })
     }
-
-    // Interleaving: [L0, R0, L1, R1, ...]
-    const positions: number[] = []
-    for (let i = 0; i < n; i++) {
-      positions.push(left[2 * i], left[2 * i + 1], right[2 * i], right[2 * i + 1])
-    }
-
-    // Triángulos para strip de pares (dos triángulos por segmento)
-    const indices: number[] = []
-    for (let i = 0; i < n - 1; i++) {
-      const i0 = i * 2
-      const i1 = i * 2 + 1
-      const i2 = (i + 1) * 2
-      const i3 = (i + 1) * 2 + 1
-      // triángulos (i0, i1, i2) y (i1, i3, i2)
-      indices.push(i0, i1, i2, i1, i3, i2)
-    }
-
-    // UVs dummy
-    const uvs: number[] = new Array((n) * 4).fill(0)
-
-    const geom = new MeshGeometry({
-      positions: new Float32Array(positions),
-      uvs: new Float32Array(uvs),
-      indices: new Uint32Array(indices),
-    })
 
     // Usamos el shader por defecto de Pixi para que respete transformaciones (pan/zoom)
     const mesh = new Mesh({ geometry: geom, texture: Texture.WHITE })
-  mesh.tint = this.strokeColor
-  mesh.alpha = this.opacity
+  // assign shader/material depending on per-vertex alpha usage
+  if (usePerVertex) {
+    ;(mesh as any).shader = createAlphaStripShader(this.strokeColor, this.opacity)
+    mesh.alpha = 1.0
+  } else {
+    mesh.tint = this.strokeColor
+    mesh.alpha = this.opacity
+  }
   ;(mesh as any).blendMode = this.blendMode
 
     this.container.addChild(mesh)
-    ;(mesh as any).size = indices.length
-    ;(geom as any).vertexCount = positions.length / 2
+  ;(mesh as any).size = strip.indices.length
+  ;(geom as any).vertexCount = strip.positions.length / 2
 
     // Elimina la vista previa temporal
     this.previewMesh?.destroy({ children: true })
