@@ -11,6 +11,22 @@ export class LapizVectorTool {
   private container: Container | null = null
   private points: { x: number; y: number; pressure?: number }[] = []
   private widthBase = 6
+  private strokeColor = 0xffffff
+  private opacity = 0.12
+  private blendMode: any = 'add'
+
+  setStyle(styleOrSize: any, color?: number) {
+    if (typeof styleOrSize === 'object') {
+      const s = styleOrSize as { strokeSize?: number; strokeColor?: number; opacity?: number; blendMode?: string }
+      if (typeof s.strokeSize === 'number') this.widthBase = Math.max(1, s.strokeSize)
+      if (typeof s.strokeColor === 'number') this.strokeColor = s.strokeColor >>> 0
+      if (typeof s.opacity === 'number') this.opacity = s.opacity
+      if (typeof s.blendMode === 'string') this.blendMode = s.blendMode as any
+    } else {
+      this.widthBase = Math.max(1, styleOrSize)
+      this.strokeColor = (color ?? this.strokeColor) >>> 0
+    }
+  }
 
   // Calcula media anchura (half-width) consistente para preview y trazo final
   private _halfWidth(pressure?: number) {
@@ -28,10 +44,12 @@ export class LapizVectorTool {
     // Crea un mesh de preview vacío que iremos actualizando en tiempo real
     const geom = new MeshGeometry({ positions: new Float32Array(), uvs: new Float32Array(), indices: new Uint32Array() })
     const mesh = new Mesh({ geometry: geom, texture: Texture.WHITE })
-    mesh.tint = 0xffffff
+    mesh.tint = this.strokeColor
     // Igualar estilo al trazo final
-    mesh.alpha = 0.12
-    mesh.blendMode = 'add' as any
+  mesh.alpha = this.opacity
+  ;(mesh as any).blendMode = this.blendMode
+    ;(mesh as any).size = 0
+    ;(geom as any).vertexCount = 0
     layer.addChild(mesh)
     this.previewMesh = mesh
   }
@@ -44,17 +62,16 @@ export class LapizVectorTool {
     const n = this.points.length
     const geom = this.previewMesh.geometry
     if (n < 2) {
-      // limpiar buffers cuando no hay suficientes puntos
-      if (((geom as any).vertexCount ?? 0) > 0) {
-        geom.buffers[0].data = new Float32Array(0)
-        geom.buffers[0].update()
-        geom.buffers[1].data = new Float32Array(0)
-        geom.buffers[1].update()
-        geom.indexBuffer.data = new Uint32Array(0)
-        geom.indexBuffer.update()
-        ;(this.previewMesh as any).size = 0
-        ;(geom as any).vertexCount = 0
-      }
+      // limpiar buffers cuando no hay suficientes puntos (siempre forzar contadores)
+      geom.buffers[0].data = new Float32Array(0)
+      geom.buffers[0].update()
+      geom.buffers[1].data = new Float32Array(0)
+      geom.buffers[1].update()
+      geom.indexBuffer.data = new Uint32Array(0)
+      geom.indexBuffer.update()
+      ;(this.previewMesh as any).size = 0
+      ;(geom as any).vertexCount = 0
+      this.previewMesh.visible = false
       return
     }
 
@@ -100,6 +117,7 @@ export class LapizVectorTool {
     geom.indexBuffer.update()
     ;(this.previewMesh as any).size = indices.length
     ;(geom as any).vertexCount = positions.length / 2
+    this.previewMesh.visible = true
   }
 
   end() {
@@ -162,11 +180,13 @@ export class LapizVectorTool {
 
     // Usamos el shader por defecto de Pixi para que respete transformaciones (pan/zoom)
     const mesh = new Mesh({ geometry: geom, texture: Texture.WHITE })
-  mesh.tint = 0xffffff
-  mesh.alpha = 0.12
-  mesh.blendMode = 'add' as any
+  mesh.tint = this.strokeColor
+  mesh.alpha = this.opacity
+  ;(mesh as any).blendMode = this.blendMode
 
     this.container.addChild(mesh)
+    ;(mesh as any).size = indices.length
+    ;(geom as any).vertexCount = positions.length / 2
 
     // Elimina la vista previa temporal
     this.previewMesh?.destroy({ children: true })

@@ -1,6 +1,6 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { useEngine } from './EngineContext'
-import { Pen, MousePointer2, Brush, Eraser } from 'lucide-react'
+import { Pen, MousePointer2, Brush, Eraser, PanelLeftClose, PanelLeftOpen, Palette, Droplet, SlidersVertical } from 'lucide-react'
 import type { ToolKey } from '../VektorEngine'
 
 // Mantener los nombres de herramienta en línea con VektorEngine
@@ -17,31 +17,90 @@ const tools: { name: ToolName; icon: React.ReactNode; label: string }[] = [
 export const Toolbar: React.FC = () => {
   const engine = useEngine()
   const [activeTool, setActiveTool] = useState<ToolName>(() => engine.getActiveTool() as ToolName)
+  const [collapsed, setCollapsed] = useState(false)
+  const [size, setSize] = useState(() => engine.getStrokeSize?.() ?? 8)
+  const [strokeHex, setStrokeHex] = useState(() => `#${(engine.getStrokeColor?.() ?? 0xffffff).toString(16).padStart(6, '0')}`)
+  const [bgHex, setBgHex] = useState(() => `#${(engine.getBackgroundColor?.() ?? 0x111111).toString(16).padStart(6, '0')}`)
+  const [opacity, setOpacity] = useState(() => engine.getOpacity?.() ?? 1)
+  const [blend, setBlend] = useState(() => engine.getBlendMode?.() ?? 'normal')
+  const [fh, setFh] = useState(() => engine.getFreehandParams?.() ?? { thinning: 0.6, smoothing: 0.6, streamline: 0.5 })
 
   const handleToolClick = (toolName: ToolName) => {
     engine.setActiveTool(toolName)
     setActiveTool(toolName)
   }
 
+  const onSizeChange = (v: number) => {
+    setSize(v)
+    engine.setStrokeSize?.(v)
+  }
+  const onStrokeHexChange = (hex: string) => {
+    setStrokeHex(hex)
+    const n = parseInt(hex.replace('#', ''), 16) >>> 0
+    engine.setStrokeColor?.(n)
+  }
+  const onBgHexChange = (hex: string) => {
+    setBgHex(hex)
+    const n = parseInt(hex.replace('#', ''), 16) >>> 0
+    engine.setBackgroundColor?.(n)
+  }
+  const onOpacityChange = (v: number) => {
+    setOpacity(v)
+    engine.setOpacity?.(v)
+  }
+  const onBlendChange = (mode: string) => {
+    setBlend(mode)
+    engine.setBlendMode?.(mode)
+  }
+  const onFhChange = (key: 'thinning' | 'smoothing' | 'streamline', v: number) => {
+    const next = { ...fh, [key]: v }
+    setFh(next)
+    engine.setFreehandParams?.(next)
+  }
+
+  // Mantener la UI en sync cuando se usa el teclado (1-4)
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Digit1' || e.code === 'Digit2' || e.code === 'Digit3' || e.code === 'Digit4') {
+        setActiveTool(engine.getActiveTool() as ToolName)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [engine])
+
   return (
     <div
       className="
-        absolute top-4 left-4 z-10
-        flex flex-col gap-1 p-1.5
-        bg-gray-800 text-white
-        border border-gray-700/50
+        absolute top-4 left-4 z-[9999]
+        flex flex-col gap-1 p-2 select-none
+        bg-white text-gray-900
+        border border-gray-300
         rounded-lg shadow-md
+        pointer-events-auto
       "
+      style={{ position: 'absolute', top: 16, left: 16, zIndex: 9999, pointerEvents: 'auto', backgroundColor: '#fff' }}
     >
-      {tools.map((tool) => (
+      {/* Toggle de colapso */}
+      <button
+        aria-label={collapsed ? 'Expandir barra de herramientas' : 'Contraer barra de herramientas'}
+        title={collapsed ? 'Expandir' : 'Contraer'}
+        onClick={() => setCollapsed((v) => !v)}
+        className="p-2 rounded-md text-gray-700 hover:text-gray-900 hover:bg-gray-100 transition-colors border border-gray-300"
+      >
+        {collapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+      </button>
+
+      {/* Botones de herramientas (solo visibles cuando no está colapsado) */}
+      {!collapsed && tools.map((tool) => (
         <button
           key={tool.name}
           onClick={() => handleToolClick(tool.name)}
           data-active={activeTool === tool.name}
           className="
-            p-2 rounded-md text-white/70
+            p-2 rounded-md text-gray-700
             transition-colors duration-100 ease-in-out
-            hover:bg-gray-700/60 hover:text-white
+            hover:bg-gray-100 hover:text-gray-900
             data-[active=true]:bg-blue-600 data-[active=true]:text-white
           "
           title={tool.label}
@@ -49,6 +108,107 @@ export const Toolbar: React.FC = () => {
           {tool.icon}
         </button>
       ))}
+
+      {/* Controles de tamaño y color */}
+      {!collapsed && (
+        <div className="mt-1 grid gap-1.5">
+          {/* Tamaño */}
+          <div className="flex items-center gap-2 bg-gray-50 rounded-md p-2 border border-gray-200">
+            <SlidersVertical size={16} className="shrink-0 opacity-80" />
+            <input
+              type="range"
+              min={1}
+              max={64}
+              step={1}
+              value={size}
+              onChange={(e) => onSizeChange(Number(e.target.value))}
+              className="w-28 accent-blue-500"
+              title={`Tamaño: ${size}px`}
+            />
+            <span className="text-xs tabular-nums w-8 text-right opacity-80">{size}</span>
+          </div>
+
+          {/* Color de trazo */}
+          <div className="flex items-center gap-2 bg-gray-50 rounded-md p-2 border border-gray-200">
+            <Palette size={16} className="shrink-0 opacity-80" />
+            <input
+              type="color"
+              value={strokeHex}
+              onChange={(e) => onStrokeHexChange(e.target.value)}
+              className="h-7 w-7 rounded-md border border-gray-300 bg-transparent p-0"
+              title="Color de trazo"
+            />
+            <span className="text-xs opacity-80">Trazo</span>
+          </div>
+
+          {/* Color de fondo */}
+          <div className="flex items-center gap-2 bg-gray-50 rounded-md p-2 border border-gray-200">
+            <Droplet size={16} className="shrink-0 opacity-80" />
+            <input
+              type="color"
+              value={bgHex}
+              onChange={(e) => onBgHexChange(e.target.value)}
+              className="h-7 w-7 rounded-md border border-gray-300 bg-transparent p-0"
+              title="Color de fondo"
+            />
+            <span className="text-xs opacity-80">Fondo</span>
+          </div>
+
+          {/* Fusión y opacidad */}
+          <div className="flex items-center gap-2 bg-gray-50 rounded-md p-2 border border-gray-200">
+            <span className="text-xs opacity-80 w-16">Fusión</span>
+            <select
+              value={blend}
+              onChange={(e) => onBlendChange(e.target.value)}
+              className="bg-white text-sm rounded-md px-2 py-1 border border-gray-300"
+              title="Modo de fusión"
+            >
+              <option value="normal">Normal</option>
+              <option value="add">Add</option>
+              <option value="multiply">Multiply</option>
+              <option value="screen">Screen</option>
+            </select>
+            <span className="text-xs opacity-80 w-16 text-right">Opacidad</span>
+            <input
+              type="range"
+              min={0.05}
+              max={1}
+              step={0.01}
+              value={opacity}
+              onChange={(e) => onOpacityChange(Number(e.target.value))}
+              className="w-24 accent-blue-500"
+              title={`Opacidad: ${(opacity * 100) | 0}%`}
+            />
+            <span className="text-xs tabular-nums w-10 text-right opacity-80">{Math.round(opacity * 100)}%</span>
+          </div>
+
+          {/* Parámetros Freehand */}
+          <div className="flex flex-col gap-1.5 bg-gray-50 rounded-md p-2 border border-gray-200">
+            <span className="text-xs opacity-80">Freehand</span>
+            <label className="flex items-center gap-2">
+              <span className="text-xs w-16 opacity-80">Thinning</span>
+              <input type="range" min={-1} max={1} step={0.01} value={fh.thinning}
+                onChange={(e) => onFhChange('thinning', Number(e.target.value))}
+                className="w-36 accent-blue-500" />
+              <span className="text-xs tabular-nums w-12 text-right opacity-80">{fh.thinning.toFixed(2)}</span>
+            </label>
+            <label className="flex items-center gap-2">
+              <span className="text-xs w-16 opacity-80">Smoothing</span>
+              <input type="range" min={0} max={1} step={0.01} value={fh.smoothing}
+                onChange={(e) => onFhChange('smoothing', Number(e.target.value))}
+                className="w-36 accent-blue-500" />
+              <span className="text-xs tabular-nums w-12 text-right opacity-80">{fh.smoothing.toFixed(2)}</span>
+            </label>
+            <label className="flex items-center gap-2">
+              <span className="text-xs w-16 opacity-80">Streamline</span>
+              <input type="range" min={0} max={1} step={0.01} value={fh.streamline}
+                onChange={(e) => onFhChange('streamline', Number(e.target.value))}
+                className="w-36 accent-blue-500" />
+              <span className="text-xs tabular-nums w-12 text-right opacity-80">{fh.streamline.toFixed(2)}</span>
+            </label>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

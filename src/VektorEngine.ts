@@ -28,6 +28,18 @@ export class VektorEngine {
   private zoom = 1
   private isInitialized = false
 
+  // Estilo global configurable
+  private strokeColor: number = 0xffffff
+  private strokeSize: number = 8
+  private backgroundColor: number = 0x111111
+  private opacity: number = 1.0
+  private blendMode: string = 'normal'
+  private freehand = {
+    thinning: 0.6,
+    smoothing: 0.6,
+    streamline: 0.5,
+  }
+
   constructor() {
     // Núcleo Pixi (se termina de inicializar en init())
     this.app = new Application()
@@ -48,6 +60,9 @@ export class VektorEngine {
       vpen: new LapizVectorTool(),
       raster: new LapizRasterTool(),
     }
+
+    // Propagar estilo inicial a todas las herramientas
+    this.applyStyleToTools()
   }
 
   private getActiveLayerNode() {
@@ -65,7 +80,7 @@ export class VektorEngine {
     await this.app.init({
       width,
       height,
-      backgroundColor: 0x111111,
+      backgroundColor: this.backgroundColor as any,
       antialias: true,
       resolution: window.devicePixelRatio || 1,
     })
@@ -75,6 +90,14 @@ export class VektorEngine {
 
     // Montar canvas
     container.appendChild(this.app.canvas)
+
+    // Asegurar fondo también por CSS por compatibilidad
+    try {
+      ;(this.app.renderer as any).background.color = this.backgroundColor
+    } catch {}
+    ;(this.app.canvas as HTMLCanvasElement).style.backgroundColor = `#${this.backgroundColor
+      .toString(16)
+      .padStart(6, '0')}`
 
     // Input de alta fidelidad directamente sobre el canvas
     const onSamples = (_id: number, samples: InputSample[], phase: PointerPhase) => {
@@ -229,4 +252,65 @@ export class VektorEngine {
     try { this.removeWheel?.() } catch {}
     try { this.removeBeforeUnload?.() } catch {}
   }
+
+  // --- API de estilo ---
+  private applyStyleToTools() {
+    for (const key of Object.keys(this.tools) as ToolKey[]) {
+      const t = this.tools[key]
+      if (t && typeof t.setStyle === 'function') {
+        t.setStyle({
+          strokeSize: this.strokeSize,
+          strokeColor: this.strokeColor,
+          opacity: this.opacity,
+          blendMode: this.blendMode,
+          freehand: { ...this.freehand },
+        })
+      }
+    }
+  }
+
+  setStrokeSize(size: number) {
+    this.strokeSize = Math.max(1, Math.min(128, Math.floor(size)))
+    this.applyStyleToTools()
+  }
+  getStrokeSize() { return this.strokeSize }
+
+  setStrokeColor(color: number) {
+    this.strokeColor = color >>> 0
+    this.applyStyleToTools()
+  }
+  getStrokeColor() { return this.strokeColor }
+
+  setOpacity(alpha: number) {
+    this.opacity = Math.max(0.01, Math.min(1, alpha))
+    this.applyStyleToTools()
+  }
+  getOpacity() { return this.opacity }
+
+  setBlendMode(mode: string) {
+    // Aceptamos subset seguro: normal, add, multiply, screen
+    const allowed = new Set(['normal', 'add', 'multiply', 'screen'])
+    this.blendMode = allowed.has(mode) ? mode : 'normal'
+    this.applyStyleToTools()
+  }
+  getBlendMode() { return this.blendMode }
+
+  setFreehandParams(params: { thinning?: number; smoothing?: number; streamline?: number }) {
+    if (typeof params.thinning === 'number') this.freehand.thinning = Math.max(-1, Math.min(1, params.thinning))
+    if (typeof params.smoothing === 'number') this.freehand.smoothing = Math.max(0, Math.min(1, params.smoothing))
+    if (typeof params.streamline === 'number') this.freehand.streamline = Math.max(0, Math.min(1, params.streamline))
+    this.applyStyleToTools()
+  }
+  getFreehandParams() { return { ...this.freehand } }
+
+  setBackgroundColor(color: number) {
+    this.backgroundColor = color >>> 0
+    try { (this.app.renderer as any).background.color = this.backgroundColor } catch {}
+    try {
+      (this.app.canvas as HTMLCanvasElement).style.backgroundColor = `#${this.backgroundColor
+        .toString(16)
+        .padStart(6, '0')}`
+    } catch {}
+  }
+  getBackgroundColor() { return this.backgroundColor }
 }

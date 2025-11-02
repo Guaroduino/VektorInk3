@@ -18,6 +18,26 @@ export class LapizRasterTool {
   // Configuración visual
   private baseAlpha = 0.08 // igual que el final
   private spacing = 2.0    // px entre dabs (espaciado por distancia)
+  private strokeSize = 8
+  private strokeColor = 0xffffff
+  private opacity = 0.12
+  private blendMode: any = 'add'
+
+  setStyle(styleOrSize: any, color?: number) {
+    if (typeof styleOrSize === 'object') {
+      const s = styleOrSize as { strokeSize?: number; strokeColor?: number; opacity?: number; blendMode?: string }
+      if (typeof s.strokeSize === 'number') this.strokeSize = Math.max(1, s.strokeSize)
+      if (typeof s.strokeColor === 'number') this.strokeColor = s.strokeColor >>> 0
+      if (typeof s.opacity === 'number') {
+        this.opacity = s.opacity
+        this.baseAlpha = this.opacity
+      }
+      if (typeof s.blendMode === 'string') this.blendMode = s.blendMode as any
+    } else {
+      this.strokeSize = Math.max(1, styleOrSize)
+      this.strokeColor = (color ?? this.strokeColor) >>> 0
+    }
+  }
 
   private getDabTexture(): Texture {
     if (this.dabTexture) return this.dabTexture
@@ -55,16 +75,18 @@ export class LapizRasterTool {
     if (!this.previewContainer) return
     const tex = this.getDabTexture()
     const placeDab = (x: number, y: number, pressure?: number) => {
-      const r = 2 + (pressure ?? 0.5) * 3 // mismo radio que el final
+      // Radio depende del tamaño global y presión (en [0.5..1] de strokeSize)
+      const pr = pressure ?? 0.5
+      const r = this.strokeSize * (0.5 + 0.5 * pr)
       const spr = new Sprite({ texture: tex })
       spr.anchor.set(0.5)
       spr.x = x
       spr.y = y
       const scale = (r * 2) / tex.width
       spr.scale.set(scale)
-      spr.alpha = this.baseAlpha
-      spr.tint = 0xffffff
-      spr.blendMode = 'add' as any
+  spr.alpha = this.baseAlpha
+      spr.tint = this.strokeColor
+  ;(spr as any).blendMode = this.blendMode
       this.previewContainer!.addChild(spr)
     }
 
@@ -122,7 +144,8 @@ export class LapizRasterTool {
     // Resampleo por distancia continuo (incluye residual entre segmentos)
     const dabs: { x: number; y: number; pressure?: number; r: number }[] = []
     const pushDab = (x: number, y: number, pressure?: number) => {
-      const r = 2 + (pressure ?? 0.5) * 3
+      const pr = pressure ?? 0.5
+      const r = this.strokeSize * (0.5 + 0.5 * pr)
       dabs.push({ x, y, pressure, r })
     }
     let residual = 0
@@ -173,8 +196,8 @@ export class LapizRasterTool {
     canvas.width = w
     canvas.height = h
     const ctx = canvas.getContext('2d')!
-    ctx.globalAlpha = this.baseAlpha
-    ctx.fillStyle = '#ffffff'
+  ctx.globalAlpha = this.baseAlpha
+  ctx.fillStyle = '#ffffff'
 
     // Renderiza dabs resampleados como discos
     for (const d of dabs) {
@@ -187,7 +210,8 @@ export class LapizRasterTool {
     const sprite = new Sprite(tex)
     sprite.x = minX - 8
     sprite.y = minY - 8
-    sprite.blendMode = 'add' // efecto tinta acumulada
+  ;(sprite as any).blendMode = this.blendMode // efecto tinta acumulada
+  sprite.tint = this.strokeColor
 
     this.container.addChild(sprite)
 
