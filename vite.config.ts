@@ -1,15 +1,21 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// https://vitejs.dev/config/
+// Vite configuration for React + TypeScript + Web Workers
+// - Enables React fast refresh
+// - Keeps worker bundles in ES module format (default)
+// - You can tweak server settings here if needed
 export default defineConfig({
-  // IMPORTANT: Set base to repository name for GitHub Pages project sites
-  // e.g. https://<user>.github.io/VektorInk3/
-  // This ensures built asset paths resolve correctly in production.
-  base: '/VektorInk3/',
   plugins: [react()],
   server: {
+    open: true,
     port: 5173,
-    open: false
-  }
+  },
+  preview: {
+    port: 5173,
+  },
+  // Worker options are fine by default for Vite; left here for clarity
+  worker: {
+    format: 'es',
+  },
 })
