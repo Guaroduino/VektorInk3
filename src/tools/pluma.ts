@@ -18,6 +18,7 @@ export class PlumaTool {
   private opacity = 1.0
   private blendMode: any = 'normal'
   private freehand = { thinning: 0.6, smoothing: 0.6, streamline: 0.5 } 
+  private pressureSensitivity = true
   private _armed = false
   private _seq = 0
   private _pending = false
@@ -28,6 +29,7 @@ export class PlumaTool {
       const s = styleOrSize as {
         strokeSize?: number; strokeColor?: number; opacity?: number; blendMode?: string;
         freehand?: { thinning?: number; smoothing?: number; streamline?: number }
+        pressureSensitivity?: boolean
       }
       if (typeof s.strokeSize === 'number') this.strokeSize = s.strokeSize
       if (typeof s.strokeColor === 'number') this.strokeColor = s.strokeColor >>> 0
@@ -38,6 +40,7 @@ export class PlumaTool {
         this.freehand.smoothing = s.freehand.smoothing ?? this.freehand.smoothing
         this.freehand.streamline = s.freehand.streamline ?? this.freehand.streamline
       }
+      if (typeof s.pressureSensitivity === 'boolean') this.pressureSensitivity = s.pressureSensitivity
     } else {
       this.strokeSize = styleOrSize
       this.strokeColor = (color ?? this.strokeColor) >>> 0
@@ -70,7 +73,7 @@ export class PlumaTool {
 
     if (!this.previewMesh) return
     const outline = getStroke(
-      this.points.map((p) => [p.x, p.y]) as [number, number][],
+      this.points.map((p) => this.pressureSensitivity ? ([p.x, p.y, p.pressure ?? 0.5] as [number, number, number]) : ([p.x, p.y] as [number, number])),
       { 
         size: this.strokeSize, 
         thinning: this.freehand.thinning, 
@@ -191,7 +194,7 @@ export class PlumaTool {
     
     // 2) Obtener contorno final de perfect-freehand
     const outline = getStroke(
-      pointsToProcess.map((p) => [p.x, p.y]) as [number, number][],
+      pointsToProcess.map((p) => this.pressureSensitivity ? ([p.x, p.y, p.pressure ?? 0.5] as [number, number, number]) : ([p.x, p.y] as [number, number])),
       { 
         size: this.strokeSize, 
         thinning: this.freehand.thinning, 

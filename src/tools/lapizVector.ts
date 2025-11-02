@@ -14,6 +14,7 @@ export class LapizVectorTool {
   private strokeColor = 0xffffff
   private opacity = 0.12
   private blendMode: any = 'add'
+  private pressureSensitivity = true
 
   setStyle(styleOrSize: any, color?: number) {
     if (typeof styleOrSize === 'object') {
@@ -22,6 +23,7 @@ export class LapizVectorTool {
       if (typeof s.strokeColor === 'number') this.strokeColor = s.strokeColor >>> 0
       if (typeof s.opacity === 'number') this.opacity = s.opacity
       if (typeof s.blendMode === 'string') this.blendMode = s.blendMode as any
+      if (typeof (styleOrSize as any).pressureSensitivity === 'boolean') this.pressureSensitivity = (styleOrSize as any).pressureSensitivity
     } else {
       this.widthBase = Math.max(1, styleOrSize)
       this.strokeColor = (color ?? this.strokeColor) >>> 0
@@ -89,7 +91,7 @@ export class LapizVectorTool {
       const len = Math.hypot(dx, dy) || 1
       let nx = -dy / len
       let ny = dx / len
-      const w = this._halfWidth(p.pressure)
+  const w = this._halfWidth(this.pressureSensitivity ? p.pressure : undefined)
       left.push(p.x + nx * w, p.y + ny * w)
       right.push(p.x - nx * w, p.y - ny * w)
     }
@@ -147,7 +149,7 @@ export class LapizVectorTool {
       let nx = -dy / len
       let ny = dx / len
       // ancho local
-      const w = this._halfWidth(p.pressure)
+    const w = this._halfWidth(this.pressureSensitivity ? p.pressure : undefined)
       left.push(p.x + nx * w, p.y + ny * w)
       right.push(p.x - nx * w, p.y - ny * w)
     }

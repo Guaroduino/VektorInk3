@@ -39,6 +39,8 @@ export class VektorEngine {
     smoothing: 0.6,
     streamline: 0.5,
   }
+  // Pressure sensitivity enabled by default
+  private pressureSensitivity: boolean = true
 
   constructor() {
     // Núcleo Pixi (se termina de inicializar en init())
@@ -264,6 +266,7 @@ export class VektorEngine {
           opacity: this.opacity,
           blendMode: this.blendMode,
           freehand: { ...this.freehand },
+          pressureSensitivity: this.pressureSensitivity,
         })
       }
     }
@@ -302,6 +305,13 @@ export class VektorEngine {
     this.applyStyleToTools()
   }
   getFreehandParams() { return { ...this.freehand } }
+
+  // --- Pressure sensitivity API ---
+  setPressureSensitivity(on: boolean) {
+    this.pressureSensitivity = !!on
+    this.applyStyleToTools()
+  }
+  getPressureSensitivity() { return this.pressureSensitivity }
 
   setBackgroundColor(color: number) {
     this.backgroundColor = color >>> 0

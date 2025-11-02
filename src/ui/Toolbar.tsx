@@ -24,6 +24,7 @@ export const Toolbar: React.FC = () => {
   const [opacity, setOpacity] = useState(() => engine.getOpacity?.() ?? 1)
   const [blend, setBlend] = useState(() => engine.getBlendMode?.() ?? 'normal')
   const [fh, setFh] = useState(() => engine.getFreehandParams?.() ?? { thinning: 0.6, smoothing: 0.6, streamline: 0.5 })
+  const [pressureEnabled, setPressureEnabled] = useState(() => engine.getPressureSensitivity?.() ?? true)
 
   const handleToolClick = (toolName: ToolName) => {
     engine.setActiveTool(toolName)
@@ -56,6 +57,11 @@ export const Toolbar: React.FC = () => {
     const next = { ...fh, [key]: v }
     setFh(next)
     engine.setFreehandParams?.(next)
+  }
+
+  const onPressureToggle = (v: boolean) => {
+    setPressureEnabled(v)
+    engine.setPressureSensitivity?.(v)
   }
 
   // Mantener la UI en sync cuando se usa el teclado (1-4)
@@ -185,6 +191,11 @@ export const Toolbar: React.FC = () => {
           {/* Parámetros Freehand */}
           <div className="flex flex-col gap-1.5 bg-gray-50 rounded-md p-2 border border-gray-200">
             <span className="text-xs opacity-80">Freehand</span>
+            {/* Pressure sensitivity toggle */}
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={pressureEnabled} onChange={(e) => onPressureToggle(e.target.checked)} />
+              <span className="text-xs opacity-80">Presión (tablet)</span>
+            </label>
             <label className="flex items-center gap-2">
               <span className="text-xs w-16 opacity-80">Thinning</span>
               <input type="range" min={-1} max={1} step={0.01} value={fh.thinning}

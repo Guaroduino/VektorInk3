@@ -22,6 +22,7 @@ export class LapizRasterTool {
   private strokeColor = 0xffffff
   private opacity = 0.12
   private blendMode: any = 'add'
+  private pressureSensitivity = true
 
   setStyle(styleOrSize: any, color?: number) {
     if (typeof styleOrSize === 'object') {
@@ -33,6 +34,7 @@ export class LapizRasterTool {
         this.baseAlpha = this.opacity
       }
       if (typeof s.blendMode === 'string') this.blendMode = s.blendMode as any
+      if (typeof (styleOrSize as any).pressureSensitivity === 'boolean') this.pressureSensitivity = (styleOrSize as any).pressureSensitivity
     } else {
       this.strokeSize = Math.max(1, styleOrSize)
       this.strokeColor = (color ?? this.strokeColor) >>> 0
@@ -76,7 +78,7 @@ export class LapizRasterTool {
     const tex = this.getDabTexture()
     const placeDab = (x: number, y: number, pressure?: number) => {
       // Radio depende del tamaño global y presión (en [0.5..1] de strokeSize)
-      const pr = pressure ?? 0.5
+      const pr = this.pressureSensitivity ? (pressure ?? 0.5) : 0.5
       const r = this.strokeSize * (0.5 + 0.5 * pr)
       const spr = new Sprite({ texture: tex })
       spr.anchor.set(0.5)
@@ -93,7 +95,7 @@ export class LapizRasterTool {
     for (const s of samples) {
       if (!this.lastSample) {
         // Primer dab
-        placeDab(s.x, s.y, s.pressure)
+        placeDab(s.x, s.y, this.pressureSensitivity ? s.pressure : undefined)
         this.lastSample = { ...s }
         this.residualToNext = this.spacing
         continue
@@ -117,10 +119,10 @@ export class LapizRasterTool {
         const tAbs = (traveled + distToNext) / segLen
         const x = prev.x + ux * (traveled + distToNext)
         const y = prev.y + uy * (traveled + distToNext)
-        const p0 = prev.pressure ?? 0.5
-        const p1 = s.pressure ?? 0.5
-        const pr = p0 + (p1 - p0) * tAbs
-        placeDab(x, y, pr)
+  const p0 = this.pressureSensitivity ? (prev.pressure ?? 0.5) : 0.5
+  const p1 = this.pressureSensitivity ? (s.pressure ?? 0.5) : 0.5
+  const pr = p0 + (p1 - p0) * tAbs
+  placeDab(x, y, pr)
         traveled += distToNext
         distToNext = this.spacing
       }
@@ -144,7 +146,7 @@ export class LapizRasterTool {
     // Resampleo por distancia continuo (incluye residual entre segmentos)
     const dabs: { x: number; y: number; pressure?: number; r: number }[] = []
     const pushDab = (x: number, y: number, pressure?: number) => {
-      const pr = pressure ?? 0.5
+      const pr = this.pressureSensitivity ? (pressure ?? 0.5) : 0.5
       const r = this.strokeSize * (0.5 + 0.5 * pr)
       dabs.push({ x, y, pressure, r })
     }
@@ -169,9 +171,9 @@ export class LapizRasterTool {
         const tAbs = (traveled + distToNext) / segLen
         const x = prev.x + ux * (traveled + distToNext)
         const y = prev.y + uy * (traveled + distToNext)
-        const p0 = prev.pressure ?? 0.5
-        const p1 = cur.pressure ?? 0.5
-        const pr = p0 + (p1 - p0) * tAbs
+  const p0 = this.pressureSensitivity ? (prev.pressure ?? 0.5) : 0.5
+  const p1 = this.pressureSensitivity ? (cur.pressure ?? 0.5) : 0.5
+  const pr = p0 + (p1 - p0) * tAbs
         pushDab(x, y, pr)
         traveled += distToNext
         distToNext = this.spacing
