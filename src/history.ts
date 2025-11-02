@@ -12,12 +12,23 @@ export class HistoryManager {
   private redoStack: HistoryAction[] = []
   private onChangeCb?: () => void
   private grouping: HistoryAction[] | null = null
+  private limit = 20
 
-  constructor(onChange?: () => void) {
+  constructor(onChange?: () => void, limit: number = 20) {
     this.onChangeCb = onChange
+    this.limit = Math.max(1, Math.floor(limit))
   }
 
   private notify() { try { this.onChangeCb?.() } catch {} }
+  private ensureCapacity() {
+    while (this.undoStack.length > this.limit) this.undoStack.shift()
+  }
+
+  setLimit(n: number) {
+    this.limit = Math.max(1, Math.floor(n))
+    this.ensureCapacity()
+    this.notify()
+  }
 
   beginGroup() {
     if (!this.grouping) this.grouping = []
@@ -39,6 +50,7 @@ export class HistoryManager {
     }
     this.redoStack.length = 0
     this.undoStack.push(action)
+    this.ensureCapacity()
     this.notify()
   }
 
@@ -49,6 +61,7 @@ export class HistoryManager {
     }
     this.redoStack.length = 0
     this.undoStack.push(action)
+    this.ensureCapacity()
     this.notify()
   }
 

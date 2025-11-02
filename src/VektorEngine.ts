@@ -78,6 +78,9 @@ export class VektorEngine {
 
     // Propagar estilo inicial a todas las herramientas
     this.applyStyleToTools()
+
+    // Limit history to 20 steps
+    try { this.history.setLimit?.(20) } catch {}
   }
 
   private getActiveLayerNode() {
