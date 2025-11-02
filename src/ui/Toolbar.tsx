@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { useEngine } from './EngineContext'
-import { Pen, MousePointer2, Brush, Eraser, PanelLeftClose, PanelLeftOpen, Palette, Droplet, SlidersVertical } from 'lucide-react'
+import { Pen, MousePointer2, Brush, Eraser, PanelLeftClose, PanelLeftOpen, Palette, Droplet, SlidersVertical, RotateCcw, RotateCw, Trash2 } from 'lucide-react'
 import type { ToolKey } from '../VektorEngine'
 
 // Mantener los nombres de herramienta en línea con VektorEngine
@@ -27,6 +27,8 @@ export const Toolbar: React.FC = () => {
   const [pressureEnabled, setPressureEnabled] = useState(() => engine.getPressureSensitivity?.() ?? true)
   const [jitter, setJitter] = useState(() => engine.getJitterParams?.() ?? { amplitude: 0, frequency: 0.005, domain: 'distance' as 'distance' | 'time' })
   const [previewQ, setPreviewQ] = useState(() => engine.getPreviewQuality?.() ?? 0.8)
+  const [canUndo, setCanUndo] = useState(() => (engine as any).canUndo?.() ?? false)
+  const [canRedo, setCanRedo] = useState(() => (engine as any).canRedo?.() ?? false)
 
   const handleToolClick = (toolName: ToolName) => {
     engine.setActiveTool(toolName)
@@ -91,7 +93,14 @@ export const Toolbar: React.FC = () => {
       }
     }
     window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    const off = (engine as any).onHistoryChange?.(() => {
+      setCanUndo((engine as any).canUndo?.() ?? false)
+      setCanRedo((engine as any).canRedo?.() ?? false)
+    })
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      try { off?.() } catch {}
+    }
   }, [engine])
 
   return (
@@ -133,6 +142,35 @@ export const Toolbar: React.FC = () => {
           {tool.icon}
         </button>
       ))}
+
+      {/* Undo / Redo / Clear */}
+      {!collapsed && (
+        <div className="mt-1 flex gap-1">
+          <button
+            onClick={() => (engine as any).undo?.()}
+            disabled={!canUndo}
+            className="p-2 rounded-md border border-gray-300 text-gray-700 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-100"
+            title="Deshacer (Ctrl+Z)"
+          >
+            <RotateCcw size={18} />
+          </button>
+          <button
+            onClick={() => (engine as any).redo?.()}
+            disabled={!canRedo}
+            className="p-2 rounded-md border border-gray-300 text-gray-700 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-100"
+            title="Rehacer (Ctrl+Y o Ctrl+Shift+Z)"
+          >
+            <RotateCw size={18} />
+          </button>
+          <button
+            onClick={() => (engine as any).clearCanvas?.()}
+            className="p-2 rounded-md border border-gray-300 text-gray-700 hover:bg-gray-100"
+            title="Limpiar lienzo (Ctrl+K)"
+          >
+            <Trash2 size={18} />
+          </button>
+        </div>
+      )}
 
       {/* Controles de tamaño y color */}
       {!collapsed && (

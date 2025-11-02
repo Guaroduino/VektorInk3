@@ -5,6 +5,8 @@ import { PlumaTool } from './tools/pluma'
 import { PincelContornoTool } from './tools/pincelContorno'
 import { LapizVectorTool } from './tools/lapizVector'
 import { LapizRasterTool } from './tools/lapizRaster'
+import { LayerBatch } from './graphics/LayerBatch'
+import { HistoryManager } from './history'
 
 export type ToolKey = 'pluma' | 'vpen' | 'raster' | 'contorno'
 
@@ -27,6 +29,9 @@ export class VektorEngine {
   private lastPanY = 0
   private zoom = 1
   private isInitialized = false
+  private layerBatches = new WeakMap<Container, LayerBatch>()
+  private history = new HistoryManager(() => this._emitHistoryChange())
+  private historyListeners = new Set<() => void>()
 
   // Estilo global configurable
   private strokeColor: number = 0xffffff
@@ -77,6 +82,12 @@ export class VektorEngine {
 
   private getActiveLayerNode() {
     return this.layers.active?.node ?? this.layers.list()[0]?.node ?? this.world
+  }
+
+  private getOrCreateBatch(layer: Container) {
+    let b = this.layerBatches.get(layer)
+    if (!b) { b = new LayerBatch(layer); this.layerBatches.set(layer, b) }
+    return b
   }
 
   async init(container: HTMLElement) {
@@ -159,8 +170,45 @@ export class VektorEngine {
           const end = (tool as any).end
           if (typeof end === 'function') {
             // Algunas herramientas esperan layer en end, otras no
-            if (end.length >= 1) end.call(tool, layer)
-            else end.call(tool)
+            const result = end.length >= 1 ? end.call(tool, layer) : end.call(tool)
+            // Si la herramienta devuelve una promesa (pluma/contorno), manejar async
+            Promise.resolve(result).then((res: any) => {
+              // Registrar en historial según herramienta
+              try {
+                if (this.activeToolKey === 'vpen' && res && res.mesh) {
+                  const usingPV = !!res.usingPerVertexAlpha
+                  if (!usingPV) {
+                    const mesh = res.mesh
+                    const geom: any = mesh.geometry
+                    const positions = geom.buffers?.[0]?.data as Float32Array
+                    const uvs = (geom.buffers?.[1]?.data as Float32Array) ?? new Float32Array((positions?.length ?? 0))
+                    const indices = geom.indexBuffer?.data as Uint32Array | Uint16Array
+                    if (positions && indices) {
+                      const style = res.style ?? { color: (mesh as any).tint ?? 0xffffff, opacity: mesh.alpha ?? 1.0, blendMode: (mesh as any).blendMode ?? 'normal' }
+                      const batch = this.getOrCreateBatch(layer)
+                      const token = batch.appendStroke({ positions, uvs, indices }, style)
+                      // Remove original mesh to reduce draw calls
+                      try { layer.removeChild(mesh) } catch {}
+                      try { mesh.destroy({ children: true }) } catch {}
+                      // history action for batch append
+                      this.history.push(this.history.makeBatchAppendAction(batch, token))
+                    }
+                  } else {
+                    // using per-vertex alpha: keep mesh as child and track add/remove
+                    const parent = layer
+                    const child = res.mesh
+                    const idx = parent.getChildIndex(child)
+                    this.history.push(this.history.makeAddChildAction(parent, child, idx))
+                  }
+                } else if (res && (res.graphic || res.sprite)) {
+                  const child = res.graphic ?? res.sprite
+                  if (child && child.parent === layer) {
+                    const idx = layer.getChildIndex(child)
+                    this.history.push(this.history.makeAddChildAction(layer, child, idx))
+                  }
+                }
+              } catch {}
+            })
           }
           break
       }
@@ -187,6 +235,11 @@ export class VektorEngine {
   else if (e.code === 'Equal' || e.code === 'NumpadAdd') this.zoomIn()
   else if (e.code === 'Minus' || e.code === 'NumpadSubtract') this.zoomOut()
   else if (e.code === 'Digit0') this.zoomReset()
+      // Undo / Redo
+      else if (e.ctrlKey && !e.shiftKey && e.code === 'KeyZ') { e.preventDefault(); this.undo() }
+      else if ((e.ctrlKey && e.code === 'KeyY') || (e.ctrlKey && e.shiftKey && e.code === 'KeyZ')) { e.preventDefault(); this.redo() }
+      // Clear canvas (Ctrl+K)
+      else if (e.ctrlKey && !e.shiftKey && e.code === 'KeyK') { e.preventDefault(); this.clearCanvas() }
       else if (e.code === 'Space') {
         this.panMode = true
       }
@@ -367,4 +420,36 @@ export class VektorEngine {
     } catch {}
   }
   getBackgroundColor() { return this.backgroundColor }
+
+  // --- History API ---
+  private _emitHistoryChange() { for (const fn of this.historyListeners) { try { fn() } catch {} } }
+
+  onHistoryChange(cb: () => void) {
+    this.historyListeners.add(cb)
+    return () => { this.historyListeners.delete(cb) }
+  }
+
+  undo() { this.history.undo() }
+  redo() { this.history.redo() }
+  canUndo() { return this.history.canUndo() }
+  canRedo() { return this.history.canRedo() }
+
+  clearCanvas() {
+    // Group all removals to make a single undo step
+    this.history.beginGroup()
+    try {
+      const layers = this.layers.list()
+      for (const l of layers) {
+        const parent = l.node
+        // Snapshot children and their indices
+        const items = parent.children.map((c, i) => ({ c, i }))
+        for (const { c, i } of items) {
+          try { parent.removeChild(c) } catch {}
+          this.history.push(this.history.makeRemoveChildAction(parent, c, i))
+        }
+      }
+    } finally {
+      this.history.endGroup('clearCanvas')
+    }
+  }
 }

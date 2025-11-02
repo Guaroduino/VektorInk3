@@ -236,7 +236,12 @@ export class LapizVectorTool {
     this.previewMesh?.destroy({ children: true })
     this.previewMesh = null
 
-    const result = { mesh, points: this.points }
+    const result = { 
+      mesh, 
+      points: this.points,
+      usingPerVertexAlpha: usePerVertex,
+      style: { color: this.strokeColor, opacity: this.opacity, blendMode: this.blendMode },
+    }
     this.container = null
     this.points = []
     return result
