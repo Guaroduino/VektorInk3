@@ -72,6 +72,10 @@ export class VektorEngine {
   private previewMinMsOverride: number | null = null
   private currentAA: boolean = false
   private overlayText: Text | null = null
+  // Offscreen preview (worker-driven 2D overlay)
+  private previewWorker: Worker | null = null
+  private previewOverlayCanvas: HTMLCanvasElement | null = null
+  private previewEnabled: boolean = false
 
   constructor() {
     // Núcleo Pixi (se termina de inicializar en init())
@@ -156,8 +160,10 @@ export class VektorEngine {
     // Asegurar jerarquía
     if (!this.world.parent) this.app.stage.addChild(this.world)
 
-    // Montar canvas
-    container.appendChild(this.app.canvas)
+  // Montar canvas principal
+  container.appendChild(this.app.canvas)
+  // Intentar preparar overlay de previsualización offscreen si está habilitado
+  this._maybeEnableOffscreenPreview()
     // Create overlay watermark (Scale/MSAA) and start FPS loop
     try {
       if (!this.overlayText) {
@@ -190,7 +196,7 @@ export class VektorEngine {
   // Input de alta fidelidad directamente sobre el canvas
     this._onSamplesBound = this._onSamples.bind(this)
     const onSamples = this._onSamplesBound
-    const cap = createInputCapture(this.app.canvas, onSamples as any, { relativeToTarget: true, usePointerRawUpdate: this.lowLatency })
+  const cap = createInputCapture(this.app.canvas, onSamples as any, { relativeToTarget: true, usePointerRawUpdate: this.lowLatency, predictionMs: this.lowLatency ? 8 : 0 })
     this.inputCaptureDispose = () => cap.dispose()
     // Zoom helpers
     // Inicializar helpers de zoom expuestos también como API pública
@@ -252,6 +258,18 @@ export class VektorEngine {
 
   // Handler de muestras separado para poder reusar al reconfigurar input
   private _onSamples(_id: number, samples: InputSample[], phase: PointerPhase) {
+      // Enviar a worker de previsualización (coordenadas en espacio de canvas) si está habilitado
+      if (this.previewEnabled && this.previewWorker && !this.panMode && !this.isPanningDrag) {
+        try {
+          const msg: any = {
+            type: 'samples',
+            phase,
+            samples: samples.map((s) => ({ x: s.x, y: s.y, pressure: this.pressureSensitivity ? (s.pressure ?? 1) : 1, predicted: (s as any).predicted ? true : false })),
+            style: { color: this.strokeColor >>> 0, opacity: this.opacity, width: this.strokeSize, pressure: !!this.pressureSensitivity },
+          }
+          this.previewWorker.postMessage(msg)
+        } catch {}
+      }
       // Modo pan: usar drag para desplazar world
       if (this.panMode || this.isPanningDrag) {
         if (phase === 'start') {
@@ -287,6 +305,8 @@ export class VektorEngine {
       switch (phase) {
         case 'start':
           this.drawing = true
+          // Si usamos preview offscreen, notificar a la herramienta para que no pinte su propio preview
+          try { (this.tools[this.activeToolKey]?.setExternalPreviewEnabled?.(this.previewEnabled)) } catch {}
           tool.start(layer)
           tool.update(remapped)
           break
@@ -297,6 +317,8 @@ export class VektorEngine {
         default:
           if (!this.drawing) return
           this.drawing = false
+          // Avisar al worker para limpiar
+          if (this.previewEnabled && this.previewWorker) { try { this.previewWorker.postMessage({ type: 'end' }) } catch {} }
           const end = (tool as any).end
           if (typeof end === 'function') {
             // Algunas herramientas esperan layer en end, otras no
@@ -445,14 +467,16 @@ export class VektorEngine {
   try { if (!this.world.parent) this.app.stage.addChild(this.world) } catch {}
   // re-add overlay
   try { if (this.overlayText) this.app.stage.addChild(this.overlayText) } catch {}
-    // mount canvas
-    container.appendChild(this.app.canvas)
+  // mount canvas principal
+  container.appendChild(this.app.canvas)
+  // recreate overlay if needed
+  this._maybeEnableOffscreenPreview(true)
     // restore background styles
     try { ;(this.app.renderer as any).background.color = this.backgroundColor } catch {}
     try { ;(this.app.canvas as HTMLCanvasElement).style.backgroundColor = `#${this.backgroundColor.toString(16).padStart(6, '0')}` } catch {}
     // recreate input capture
     if (this._onSamplesBound) {
-      const cap = createInputCapture(this.app.canvas, this._onSamplesBound as any, { relativeToTarget: true, usePointerRawUpdate: this.lowLatency })
+  const cap = createInputCapture(this.app.canvas, this._onSamplesBound as any, { relativeToTarget: true, usePointerRawUpdate: this.lowLatency, predictionMs: this.lowLatency ? 8 : 0 })
       this.inputCaptureDispose = () => cap.dispose()
     }
     // wheel handler
@@ -609,11 +633,13 @@ export class VektorEngine {
     // Recreate input capture with rawupdate when toggled
     try { this.inputCaptureDispose?.() } catch {}
     if (this._onSamplesBound) {
-      const cap = createInputCapture(this.app.canvas, this._onSamplesBound as any, { relativeToTarget: true, usePointerRawUpdate: this.lowLatency })
+  const cap = createInputCapture(this.app.canvas, this._onSamplesBound as any, { relativeToTarget: true, usePointerRawUpdate: this.lowLatency, predictionMs: this.lowLatency ? 8 : 0 })
       this.inputCaptureDispose = () => cap.dispose()
     }
     // Re-apply styles to update preview cadence
     this.applyStyleToTools()
+    // Intentar activar previsualización offscreen cuando está en modo baja latencia
+    if (this.lowLatency) this._maybeEnableOffscreenPreview()
   }
   getLowLatencyMode() { return this.lowLatency }
 
@@ -717,5 +743,79 @@ export class VektorEngine {
     } finally {
       this.history.endGroup('clearCanvas')
     }
+  }
+
+  // --- Offscreen preview management ---
+  private _maybeEnableOffscreenPreview(forceRecreate: boolean = false) {
+    try {
+      const supported = typeof (window as any).OffscreenCanvas !== 'undefined' && typeof (HTMLCanvasElement.prototype as any).transferControlToOffscreen === 'function'
+      if (!supported) { this.disableOffscreenPreview(); return }
+    } catch { this.disableOffscreenPreview(); return }
+
+    if (!this.lowLatency) { this.disableOffscreenPreview(); return }
+
+    // Already enabled and not forced
+    if (this.previewEnabled && !forceRecreate) return
+
+    // Tear down previous
+    this.disableOffscreenPreview()
+
+    // Create overlay canvas
+    const parent = this.mountEl
+    if (!parent) return
+    const overlay = document.createElement('canvas')
+    overlay.style.position = 'absolute'
+    overlay.style.left = '0'
+    overlay.style.top = '0'
+    overlay.style.width = '100%'
+    overlay.style.height = '100%'
+    overlay.style.pointerEvents = 'none'
+    overlay.style.zIndex = '1'
+    parent.appendChild(overlay)
+    this.previewOverlayCanvas = overlay
+    // Size to current container
+    const cssW = parent.clientWidth || 1
+    const cssH = parent.clientHeight || 1
+    const dpr = (window as any)?.devicePixelRatio || 1
+    overlay.width = Math.max(1, Math.floor(cssW * dpr))
+    overlay.height = Math.max(1, Math.floor(cssH * dpr))
+
+    // Init worker
+    try {
+      const off = (overlay as any).transferControlToOffscreen()
+      const worker = new Worker(new URL('./workers/preview.worker.ts', import.meta.url), { type: 'module' })
+      worker.postMessage({ type: 'init', canvas: off, width: cssW, height: cssH, dpr }, [off])
+      this.previewWorker = worker
+      this.previewEnabled = true
+    } catch (err) {
+      // Fallback: disable if fails
+      console.debug?.('[OffscreenPreview] init failed', err)
+      this.disableOffscreenPreview()
+    }
+  }
+
+  resizeOverlay(width: number, height: number) {
+    const c = this.previewOverlayCanvas
+    if (!c) return
+    try {
+      c.style.width = `${width}px`
+      c.style.height = `${height}px`
+      const dpr = (window as any)?.devicePixelRatio || 1
+      const w = Math.max(1, Math.floor(width * dpr))
+      const h = Math.max(1, Math.floor(height * dpr))
+      if (c.width !== w) c.width = w
+      if (c.height !== h) c.height = h
+      if (this.previewWorker) this.previewWorker.postMessage({ type: 'resize', width, height, dpr })
+    } catch {}
+  }
+
+  disableOffscreenPreview() {
+    try { if (this.previewWorker) { this.previewWorker.terminate() } } catch {}
+    this.previewWorker = null
+    this.previewEnabled = false
+    try { if (this.previewOverlayCanvas && this.previewOverlayCanvas.parentElement) this.previewOverlayCanvas.parentElement.removeChild(this.previewOverlayCanvas) } catch {}
+    this.previewOverlayCanvas = null
+    // Rehabilitar preview interno de herramientas
+    try { for (const key of Object.keys(this.tools) as ToolKey[]) { this.tools[key]?.setExternalPreviewEnabled?.(false) } } catch {}
   }
 }

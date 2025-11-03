@@ -27,6 +27,8 @@ export const CanvasContainer: React.FC = () => {
         const cvs = app.canvas as HTMLCanvasElement
         cvs.style.width = `${w}px`
         cvs.style.height = `${h}px`
+        // Actualiza overlay offscreen si existe
+        try { (engine as any).resizeOverlay?.(w, h) } catch {}
       } catch (e) {
         // ignorar si aún no inicializó
       }
@@ -41,5 +43,5 @@ export const CanvasContainer: React.FC = () => {
     }
   }, [engine])
 
-  return <div ref={ref} className="w-full h-full flex-1" />
+  return <div ref={ref} className="w-full h-full flex-1 relative" />
 }

@@ -13,6 +13,8 @@ export interface InputSample {
   ctrlKey: boolean
   shiftKey: boolean
   metaKey: boolean
+  // Marca opcional para muestras predichas (extrapoladas)
+  predicted?: boolean
 }
 
 export interface InputOptions {
@@ -20,6 +22,8 @@ export interface InputOptions {
   relativeToTarget?: boolean
   // Usar eventos de alta frecuencia "pointerrawupdate" en lugar de "pointermove" (Chromium)
   usePointerRawUpdate?: boolean
+  // Extrapolación simple del último punto (ms en el futuro)
+  predictionMs?: number
 }
 
 export type SamplesCallback = (pointerId: number, samples: InputSample[], phase: PointerPhase, rawEvent: PointerEvent) => void
@@ -62,8 +66,21 @@ export function createInputCapture(
   }
 
   const emitCoalesced = (e: PointerEvent, phase: PointerPhase) => {
-    const events = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [e]
-    const samples = events.map((ev) => mapSample(ev as PointerEvent))
+    const evs = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [e]
+    const samples = evs.map((ev) => mapSample(ev as PointerEvent))
+    // Predicción básica: usa los dos últimos eventos coalescidos para estimar velocidad
+    const predMs = Math.max(0, options.predictionMs ?? 0)
+    if (!options.usePointerRawUpdate && predMs > 0 && samples.length >= 2) {
+      const a = samples[samples.length - 2]
+      const b = samples[samples.length - 1]
+      const dt = Math.max(0.0001, (b.time - a.time))
+      // timeStamp suele estar en ms con origen de performance; trabajamos en ms
+      const vx = (b.x - a.x) / dt
+      const vy = (b.y - a.y) / dt
+      const px = b.x + vx * predMs
+      const py = b.y + vy * predMs
+      samples.push({ ...b, x: px, y: py, time: b.time + predMs, predicted: true })
+    }
     onSamples(e.pointerId, samples, phase, e)
   }
 

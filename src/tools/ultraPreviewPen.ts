@@ -122,6 +122,7 @@ export class UltraPreviewPenTool {
   private previewCfg: { decimatePx: number; minMs: number } = { decimatePx: 0.5, minMs: 8 }
   private _rafScheduled = false
   private _lastUpdate = 0
+  private _externalPreview = false
 
   setStyle(styleOrSize: any, color?: number) {
     if (typeof styleOrSize === 'object') {
@@ -189,6 +190,17 @@ export class UltraPreviewPenTool {
 
   update(samples: InputSample[]) {
     if (!samples.length) return
+    // Cuando usamos preview externo (worker), solo acumulamos puntos y salimos
+    if (this._externalPreview) {
+      for (const s of samples) {
+        const p = Math.max(this.widthScaleRange[0], Math.min(this.widthScaleRange[1], (this.pressureSensitivity ? (s.pressure ?? 1) : 1)))
+        const last = this.points[this.points.length - 1]
+        if (!last || Math.hypot(s.x - last.x, s.y - last.y) >= Math.max(0.25, this.previewCfg.decimatePx)) {
+          this.points.push({ x: s.x, y: s.y, pressure: p })
+        }
+      }
+      return
+    }
     try { console.debug?.('[UltraPreviewPen] update called, samples=', samples.length) } catch {}
     for (const s of samples) {
       const p = Math.max(this.widthScaleRange[0], Math.min(this.widthScaleRange[1], (this.pressureSensitivity ? (s.pressure ?? 1) : 1)))
@@ -277,5 +289,13 @@ export class UltraPreviewPenTool {
     this.container = null
     this.points = []
     return result
+  }
+
+  // Habilita/deshabilita que el preview lo pinte un proceso externo
+  setExternalPreviewEnabled(on: boolean) {
+    this._externalPreview = !!on
+    if (on && this.previewMesh) {
+      try { this.previewMesh.visible = false } catch {}
+    }
   }
 }

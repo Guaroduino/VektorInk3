@@ -6,6 +6,7 @@ export class SimpleRopeTool {
   private container: Container | null = null
   private previewMesh: Mesh | null = null
   private points: { x: number; y: number }[] = []
+  private externalPreview = false
 
   // Style
   private widthBase = 8
@@ -101,6 +102,8 @@ export class SimpleRopeTool {
       }
     }
 
+    if (this.externalPreview) return
+
     // Throttle geometry updates for performance
     if (!this.previewMesh) return
     if (!this._rafScheduled) {
@@ -120,7 +123,23 @@ export class SimpleRopeTool {
   }
 
   end() {
-    const res = this.previewMesh && this.points.length >= 2 ? { mesh: this.previewMesh } : null
+    let res: any = null
+    if (this.externalPreview) {
+      // Construir Mesh final a partir de los puntos
+      if (this.container && this.points.length >= 2) {
+        const { strip } = buildStrokeStrip(this.points as any, this._params())
+        const geom = new MeshGeometry({ positions: strip.positions, uvs: strip.uvs, indices: strip.indices })
+        const mesh = new Mesh({ geometry: geom, texture: Texture.WHITE }) as any
+        mesh.tint = this.strokeColor
+        mesh.alpha = this.opacity
+        mesh.blendMode = this.blendMode
+        mesh.cullable = false
+        this.container.addChild(mesh)
+        res = { mesh }
+      }
+    } else {
+      res = this.previewMesh && this.points.length >= 2 ? { mesh: this.previewMesh } : null
+    }
     // Keep the mesh in the layer for history; detach internal refs only
     this._token++
     this.previewMesh = null
@@ -163,5 +182,13 @@ export class SimpleRopeTool {
     g.indexBuffer.data = strip.indices; g.indexBuffer.update()
     ;(mesh as any).size = strip.indices.length
     mesh.visible = true
+  }
+
+  // Permite delegar el preview a un proceso externo (worker)
+  setExternalPreviewEnabled(on: boolean) {
+    this.externalPreview = !!on
+    if (on && this.previewMesh) {
+      try { this.previewMesh.visible = false } catch {}
+    }
   }
 }
