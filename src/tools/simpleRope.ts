@@ -1,9 +1,11 @@
-import { Container, Mesh, Texture, Point, RopeGeometry, type MeshGeometry } from 'pixi.js'
+import { Container, Mesh, MeshGeometry, Texture } from 'pixi.js'
+import type { InputSample } from '../input'
+import { buildStrokeStrip, type StrokeBuilderParams } from '../geom/strokeBuilder'
 
 export class SimpleRopeTool {
   private container: Container | null = null
-  private rope: Mesh | null = null
-  private points: Point[] = []
+  private previewMesh: Mesh | null = null
+  private points: { x: number; y: number }[] = []
 
   // Style
   private widthBase = 8
@@ -37,17 +39,11 @@ export class SimpleRopeTool {
           minMs: Math.max(0, s.preview.minMs ?? this.previewCfg.minMs),
         }
       }
-      // live-apply to current rope
-      if (this.rope) {
-        ;(this.rope as any).tint = this.strokeColor
-        this.rope.alpha = this.opacity
-        ;(this.rope as any).blendMode = this.blendMode
-        const g: any = this.rope.geometry as MeshGeometry
-        if (g && typeof g === 'object') {
-          if ('width' in g) (g as any).width = this.widthBase
-          if (typeof g.updateVertices === 'function') g.updateVertices()
-          else if (typeof g.update === 'function') g.update()
-        }
+      // live-apply to current preview
+      if (this.previewMesh) {
+        ;(this.previewMesh as any).tint = this.strokeColor
+        this.previewMesh.alpha = this.opacity
+        ;(this.previewMesh as any).blendMode = this.blendMode
       }
     } else {
       this.widthBase = Math.max(1, styleOrSize)
@@ -60,34 +56,19 @@ export class SimpleRopeTool {
     this.points = []
     this._lastUpdateTime = 0
     this._accumDist = 0
-    // Rope will be created lazily on first input point
+    // Rope preview Mesh creado vacío; iremos llenando sus buffers
+    const geom = new MeshGeometry({ positions: new Float32Array(), uvs: new Float32Array(), indices: new Uint32Array() })
+    const mesh = new Mesh({ geometry: geom, texture: Texture.WHITE }) as any
+    mesh.tint = this.strokeColor
+    mesh.alpha = this.opacity
+    mesh.blendMode = this.blendMode
+    mesh.cullable = false
+    ;(mesh as any).size = 0
+    this.container.addChild(mesh)
+    this.previewMesh = mesh
   }
-
-  private _ensureRopeInitialized(p: Point) {
-    if (this.rope || !this.container) return
-    // Seed with a duplicated first point so geometry has length
-    this.points.push(new Point(p.x, p.y))
-    this.points.push(new Point(p.x, p.y))
-
-  // Mesh + RopeGeometry
-  const geom: any = new RopeGeometry({ points: this.points, width: this.widthBase })
-  const mesh = new Mesh({ geometry: geom, texture: Texture.WHITE })
-  ;(mesh as any).tint = this.strokeColor
-  mesh.alpha = this.opacity
-  ;(mesh as any).blendMode = this.blendMode
-  mesh.cullable = false
-
-  this.container.addChild(mesh)
-  this.rope = mesh
-    // Force a first update so it becomes renderable immediately
-    try {
-      const g: any = (this.rope as any).geometry
-      if (typeof g?.updateVertices === 'function') g.updateVertices()
-      else if (typeof g?.update === 'function') g.update()
-    } catch {}
-  }
-
-  update(samples: { x: number; y: number }[]) {
+  
+  update(samples: InputSample[]) {
     if (!samples || samples.length === 0) return
 
     // Distance accumulation for cadence
@@ -97,16 +78,8 @@ export class SimpleRopeTool {
         const dx = s.x - prev.x
         const dy = s.y - prev.y
         this._accumDist += Math.hypot(dx, dy)
-        prev = new Point(s.x, s.y)
+        prev = { x: s.x, y: s.y }
       }
-    }
-
-    // Lazily create rope on first point
-    let initializedNow = false
-    if (!this.rope) {
-      const first = samples[0]
-      this._ensureRopeInitialized(new Point(first.x, first.y))
-      initializedNow = !!this.rope
     }
 
     // Decimate and append points
@@ -114,7 +87,7 @@ export class SimpleRopeTool {
     let last = this.points[this.points.length - 1]
     for (const s of samples) {
       if (!last) {
-        const p = new Point(s.x, s.y)
+        const p = { x: s.x, y: s.y }
         this.points.push(p)
         last = p
         continue
@@ -122,55 +95,73 @@ export class SimpleRopeTool {
       const dx = s.x - last.x
       const dy = s.y - last.y
       if (Math.hypot(dx, dy) >= minDist) {
-        const p = new Point(s.x, s.y)
+        const p = { x: s.x, y: s.y }
         this.points.push(p)
         last = p
       }
     }
 
-    // If created this tick, force one immediate update so it shows without waiting for cadence
-    if (initializedNow && this.rope) {
-      try {
-        const g: any = (this.rope as any).geometry
-        if (typeof g?.updateVertices === 'function') g.updateVertices()
-        else if (typeof g?.update === 'function') g.update()
-      } catch {}
-    }
-
     // Throttle geometry updates for performance
-    if (!this.rope) return
+    if (!this.previewMesh) return
     if (!this._rafScheduled) {
       this._rafScheduled = true
       requestAnimationFrame(() => {
         this._rafScheduled = false
         const tokenAtSchedule = this._token
         // The stroke could have ended while a frame was queued
-        if (!this.rope || tokenAtSchedule !== this._token) return
+        if (!this.previewMesh || tokenAtSchedule !== this._token) return
         const now = performance.now ? performance.now() : Date.now()
         if (now - this._lastUpdateTime < this.previewCfg.minMs && this._accumDist < Math.max(2, this.previewCfg.decimatePx * 2)) return
         this._lastUpdateTime = now
         this._accumDist = 0
-        const g: any = (this.rope as any).geometry
-        if (g) {
-          try { if ('points' in g) (g as any).points = this.points } catch {}
-          // Many Pixi versions expose updateVertices; some expose update()
-          if (typeof g.updateVertices === 'function') g.updateVertices()
-          else if (typeof g.update === 'function') g.update()
-          // Some builds need size/vertexCount hints; best-effort no-ops otherwise
-          try { (this.rope as any).size = (g.indices?.length ?? 0) } catch {}
-          try { (g as any).vertexCount = (g.positions?.length ?? 0) / 2 } catch {}
-        }
+        this._updatePreviewGeometry()
       })
     }
   }
 
   end() {
-  const res = this.rope && this.points.length >= 2 ? { mesh: this.rope } : null
+    const res = this.previewMesh && this.points.length >= 2 ? { mesh: this.previewMesh } : null
     // Keep the mesh in the layer for history; detach internal refs only
     this._token++
-    this.rope = null
+    this.previewMesh = null
     this.container = null
     this.points = []
     return res
+  }
+
+  private _params(): StrokeBuilderParams {
+    return {
+      baseWidth: this.widthBase,
+      pressureSensitivity: false,
+      pressureMode: 'width',
+      pressureCurve: 'linear',
+      widthScaleRange: [1, 1],
+      opacityRange: [1, 1],
+      thinning: undefined,
+      jitter: undefined,
+      streamline: 0,
+    }
+  }
+
+  private _updatePreviewGeometry() {
+    if (!this.previewMesh) return
+    const { strip } = buildStrokeStrip(this.points as any, this._params())
+    const mesh = this.previewMesh
+    const g: any = mesh.geometry
+    if (strip.indices.length < 3) {
+      try {
+        g.buffers[0].data = new Float32Array(0); g.buffers[0].update()
+        g.buffers[1].data = new Float32Array(0); g.buffers[1].update()
+        g.indexBuffer.data = new Uint32Array(0); g.indexBuffer.update()
+        ;(mesh as any).size = 0
+        mesh.visible = false
+      } catch {}
+      return
+    }
+    g.buffers[0].data = strip.positions; g.buffers[0].update()
+    g.buffers[1].data = strip.uvs; g.buffers[1].update()
+    g.indexBuffer.data = strip.indices; g.indexBuffer.update()
+    ;(mesh as any).size = strip.indices.length
+    mesh.visible = true
   }
 }
