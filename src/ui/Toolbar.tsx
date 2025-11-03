@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { useEngine } from './EngineContext'
-import { Pen, MousePointer2, Brush, Eraser, PanelLeftClose, PanelLeftOpen, Palette, Droplet, SlidersVertical, RotateCcw, RotateCw, Trash2, Zap } from 'lucide-react'
+import { Pen, MousePointer2, Brush, Eraser, PanelLeftClose, PanelLeftOpen, Palette, Droplet, SlidersVertical, RotateCcw, RotateCw, Trash2, Zap, Activity } from 'lucide-react'
 import type { ToolKey } from '../VektorEngine'
 
 // Mantener los nombres de herramienta en línea con VektorEngine
@@ -13,6 +13,7 @@ const tools: { name: ToolName; icon: React.ReactNode; label: string }[] = [
   { name: 'raster', icon: <Brush size={20} />, label: 'Raster' },
   { name: 'contorno', icon: <Eraser size={20} />, label: 'Contorno' },
   { name: 'ultra', icon: <Zap size={20} />, label: 'Ultra' },
+  { name: 'rope', icon: <Activity size={20} />, label: 'Rope' },
 ]
 
 export const Toolbar: React.FC = () => {

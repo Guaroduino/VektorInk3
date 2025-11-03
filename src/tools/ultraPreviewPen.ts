@@ -26,8 +26,9 @@ function createExtrudeShader(color: number, globalAlpha: number): Shader {
   const vert = `
     precision mediump float;
     attribute vec2 aPosition;
-    // Presente en la geometría por defecto; no lo usamos pero lo declaramos para silenciar el warning
+    // Presente en la geometría por defecto; we reference it to avoid GLSL removing it during optimization
     attribute vec2 aUV;
+    varying vec2 vUV;
     attribute vec2 aPrev;
     attribute vec2 aNext;
     attribute float aSide;
@@ -44,6 +45,8 @@ function createExtrudeShader(color: number, globalAlpha: number): Shader {
       vec2 prev = aPrev;
       vec2 curr = aPosition;
       vec2 next = aNext;
+      // keep aUV as used so the attribute remains available in the linked program
+      vUV = aUV;
       vec2 dir = normalize(next - prev);
       if (!all(greaterThan(abs(dir), vec2(1e-5)))) {
         dir = vec2(1.0, 0.0);
@@ -64,23 +67,31 @@ function createExtrudeShader(color: number, globalAlpha: number): Shader {
   const frag = `
     precision mediump float;
     varying float vAlpha;
+    varying vec2 vUV;
     uniform vec3 uTint;
     uniform float uGlobalAlpha;
     void main(){
       gl_FragColor = vec4(uTint, uGlobalAlpha * vAlpha);
     }
   `
-  const program = GlProgram.from({ vertex: vert, fragment: frag })
-  // En v8 podemos pasar uniforms directamente vía resources con sus nombres
-  const shader = new (Shader as any)({
-    glProgram: program,
-    resources: {
-      uTint: [r, g, b],
-      uGlobalAlpha: globalAlpha,
-      uWidth: 6,
-      uMinScale: 0.5,
-    },
-  }) as Shader
+  let program: any
+  try {
+    program = GlProgram.from({ vertex: vert, fragment: frag })
+  } catch (err) {
+    // Re-throw with context
+    throw new Error('[UltraPreviewPen] GlProgram.from failed: ' + (err as any)?.message)
+  }
+
+  // Avoid passing primitive numbers directly in "resources" to Pixi's Shader constructor.
+  // Pixi may attempt to set properties on each resource value (e.g. `name`), which fails for
+  // primitive values like numbers. We'll create the Shader with an empty resources object
+  // and populate uniforms afterwards via updateExtrudeShader.
+  let shader: Shader
+  try {
+    shader = new (Shader as any)({ glProgram: program, resources: {} }) as Shader
+  } catch (err) {
+    throw new Error('[UltraPreviewPen] Shader creation failed: ' + (err as any)?.message)
+  }
   return shader
 }
 
@@ -152,39 +163,22 @@ export class UltraPreviewPenTool {
     this.points = []
     this._lastUpdate = 0
 
-    // Inicializa geometría vacía con firmas de v8 (evita errores de tipos)
-    const geom = new MeshGeometry({
-      positions: new Float32Array(),
-      uvs: new Float32Array(),
-      indices: new Uint32Array(),
-    })
-
-    // Atributos extra usados por el shader (añadidos como datos vacíos al inicio)
-    const gAny: any = geom
-    if (typeof gAny.addAttribute === 'function') {
-      gAny.addAttribute('aPrev', new Float32Array(), 2)
-      gAny.addAttribute('aNext', new Float32Array(), 2)
-      gAny.addAttribute('aSide', new Float32Array(), 1)
-      gAny.addAttribute('aPressure', new Float32Array(), 1)
-    }
-
-    const shader = createExtrudeShader(this.strokeColor, this.opacity)
-    updateExtrudeShader(shader, this.strokeColor, this.opacity, this.widthBase, this.widthScaleRange[0])
-    
-    const mesh = new Mesh({
-        geometry: geom,
-        shader: shader,
-        texture: Texture.WHITE, // textura dummy para mantener pipeline consistente
-    })
+    // Geometría vacía inicial y Mesh con shader por defecto (TextureShader)
+    const geom = new MeshGeometry({ positions: new Float32Array(), uvs: new Float32Array(), indices: new Uint32Array() })
+    const mesh = new Mesh({ geometry: geom, texture: Texture.WHITE })
+    mesh.tint = this.strokeColor
+    mesh.alpha = this.opacity
     
     mesh.cullable = false
     mesh.blendMode = this.blendMode
     layer.addChild(mesh)
     this.previewMesh = mesh
+  try { console.debug?.('[UltraPreviewPen] start: preview mesh added', { widthBase: this.widthBase, strokeColor: this.strokeColor }) } catch {}
     
     try {
       if (!this.debugText) {
-        this.debugText = new Text({ text: '', style: { fill: 0x00ff88 as any, fontSize: 10 } })
+        // Pixi v8: prefer the new object form { text, style }
+        this.debugText = new Text({ text: '', style: { fill: 0x00ff88 as any, fontSize: 10 } } as any)
         this.debugText.alpha = 0.8
       }
       if (this.debugText.parent !== layer) layer.addChild(this.debugText)
@@ -195,11 +189,13 @@ export class UltraPreviewPenTool {
 
   update(samples: InputSample[]) {
     if (!samples.length) return
+    try { console.debug?.('[UltraPreviewPen] update called, samples=', samples.length) } catch {}
     for (const s of samples) {
       const p = Math.max(this.widthScaleRange[0], Math.min(this.widthScaleRange[1], (this.pressureSensitivity ? (s.pressure ?? 1) : 1)))
       const last = this.points[this.points.length - 1]
       if (!last || Math.hypot(s.x - last.x, s.y - last.y) >= Math.max(0.25, this.previewCfg.decimatePx)) {
         this.points.push({ x: s.x, y: s.y, pressure: p })
+        try { console.debug?.('[UltraPreviewPen] point added, total=', this.points.length) } catch {}
       }
     }
     if (!this._rafScheduled) {
@@ -217,105 +213,40 @@ export class UltraPreviewPenTool {
     if (now - this._lastUpdate < this.previewCfg.minMs) return
     this._lastUpdate = now
 
-    const n = this.points.length
+    // Construir una tira extruida con el builder (igual que el final) y volcar en buffers
+    const { strip } = buildStrokeStrip(this.points as any, this._builderParams())
     const mesh = this.previewMesh
     const g = mesh.geometry
-
-    if (n < 2) {
-      if (mesh.visible) {
-        mesh.visible = false
-        const gAny: any = g
-        // Vacía buffers de forma segura (firma v8)
-        gAny.buffers[0].data = new Float32Array(0)
-        gAny.buffers[0].update()
-        gAny.indexBuffer.data = new Uint16Array(0)
-        gAny.indexBuffer.update()
-        ;(mesh as any).size = 0
-      }
+    const gAny: any = g
+    if (strip.indices.length < 3) {
+      gAny.buffers[0].data = new Float32Array(0)
+      gAny.buffers[0].update()
+      gAny.buffers[1].data = new Float32Array(0)
+      gAny.buffers[1].update()
+      gAny.indexBuffer.data = new Uint32Array(0)
+      gAny.indexBuffer.update()
+      ;(mesh as any).size = 0
+      mesh.visible = false
       try { if (this.debugText) this.debugText.text = 'ULTRA: v=0 i=0' } catch {}
       return
     }
 
-    mesh.visible = true
-    const vCount = n * 2
-    const iCount = (n - 1) * 6
-
-    // 1. Crear nuevos TypedArrays con el tamaño exacto necesario
-    const posData = new Float32Array(vCount * 2)
-    const prevData = new Float32Array(vCount * 2)
-    const nextData = new Float32Array(vCount * 2)
-    const sideData = new Float32Array(vCount)
-    const pressureData = new Float32Array(vCount)
-    const idxData = new Uint16Array(iCount)
-
-    // 2. Llenar los arrays
-    for (let i = 0; i < n; i++) {
-        const p = this.points[i]
-        const prev = this.points[i > 0 ? i - 1 : i]
-        const next = this.points[i < n - 1 ? i + 1 : i]
-        const vtxIdx = i * 2
-
-        // Vértice izquierdo (-1)
-        posData[vtxIdx * 2 + 0] = p.x
-        posData[vtxIdx * 2 + 1] = p.y
-        prevData[vtxIdx * 2 + 0] = prev.x
-        prevData[vtxIdx * 2 + 1] = prev.y
-        nextData[vtxIdx * 2 + 0] = next.x
-        nextData[vtxIdx * 2 + 1] = next.y
-        sideData[vtxIdx] = -1
-        pressureData[vtxIdx] = p.pressure
-
-        // Vértice derecho (+1)
-        posData[(vtxIdx + 1) * 2 + 0] = p.x
-        posData[(vtxIdx + 1) * 2 + 1] = p.y
-        prevData[(vtxIdx + 1) * 2 + 0] = prev.x
-        prevData[(vtxIdx + 1) * 2 + 1] = prev.y
-        nextData[(vtxIdx + 1) * 2 + 0] = next.x
-        nextData[(vtxIdx + 1) * 2 + 1] = next.y
-        sideData[vtxIdx + 1] = 1
-        pressureData[vtxIdx + 1] = p.pressure
-    }
-
-    for (let i = 1; i < n; i++) {
-      const i0 = (i - 1) * 2
-      const i1 = i * 2
-      const idx = (i - 1) * 6
-      idxData[idx + 0] = i0
-      idxData[idx + 1] = i0 + 1
-      idxData[idx + 2] = i1
-      idxData[idx + 3] = i1
-      idxData[idx + 4] = i0 + 1
-      idxData[idx + 5] = i1 + 1
-    }
-
-    // 3. Actualizar buffers/atributos según la API de Pixi v8
-    const gAny: any = g
-    // aPosition (buffer 0 por convención en nuestros meshes)
-    gAny.buffers[0].data = posData
+    gAny.buffers[0].data = strip.positions
     gAny.buffers[0].update()
-    // uvs no se usan en este shader, pero mantenemos el buffer presente
-    if (gAny.buffers[1]) { gAny.buffers[1].data = new Float32Array(vCount * 2); gAny.buffers[1].update() }
-    // atributos personalizados
-    if (typeof gAny.addAttribute === 'function') {
-      gAny.addAttribute('aPrev', prevData, 2)
-      gAny.addAttribute('aNext', nextData, 2)
-      gAny.addAttribute('aSide', sideData, 1)
-      gAny.addAttribute('aPressure', pressureData, 1)
-    }
-    // index buffer
-    gAny.indexBuffer.data = idxData
+    gAny.buffers[1].data = strip.uvs
+    gAny.buffers[1].update()
+    gAny.indexBuffer.data = strip.indices
     gAny.indexBuffer.update()
-
-    // 4. Actualizar el tamaño del mesh (prop interna)
-    ;(mesh as any).size = iCount
-    ;(gAny as any).vertexCount = vCount
+    ;(mesh as any).size = strip.indices.length
+    ;(gAny as any).vertexCount = strip.positions.length / 2
+    mesh.visible = true
+    try { if (this.debugText) this.debugText.text = `ULTRA: v=${strip.positions.length/2} i=${strip.indices.length}` } catch {}
     
-    try { if (this.debugText) this.debugText.text = `ULTRA: v=${vCount} i=${iCount}` } catch {}
+  try { if (this.debugText) this.debugText.text = `ULTRA: v=${this.points.length * 2} i=${Math.max(0, (this.points.length - 1) * 6)}` } catch {}
 
-    // Update material uniforms
-    if ((mesh as any).shader) {
-      updateExtrudeShader((mesh as any).shader as Shader, this.strokeColor, this.opacity, this.widthBase, this.widthScaleRange[0])
-    }
+    // Mantener estilo
+    mesh.tint = this.strokeColor
+    mesh.alpha = this.opacity
   }
 
   end() {

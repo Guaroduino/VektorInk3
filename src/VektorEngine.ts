@@ -6,10 +6,11 @@ import { PincelContornoTool } from './tools/pincelContorno'
 import { LapizVectorTool } from './tools/lapizVector'
 import { LapizRasterTool } from './tools/lapizRaster'
 import { UltraPreviewPenTool } from './tools/ultraPreviewPen'
+import { SimpleRopeTool } from './tools/simpleRope'
 import { LayerBatch } from './graphics/LayerBatch'
 import { HistoryManager } from './history'
 
-export type ToolKey = 'pluma' | 'vpen' | 'raster' | 'contorno' | 'ultra'
+export type ToolKey = 'pluma' | 'vpen' | 'raster' | 'contorno' | 'ultra' | 'rope'
 
 export class VektorEngine {
   private app: Application
@@ -92,6 +93,7 @@ export class VektorEngine {
       vpen: new LapizVectorTool(),
       raster: new LapizRasterTool(),
       ultra: new UltraPreviewPenTool(),
+      rope: new SimpleRopeTool(),
     }
 
     // Propagar estilo inicial a todas las herramientas
@@ -201,7 +203,8 @@ export class VektorEngine {
       else if (e.code === 'Digit2') this.activeToolKey = 'vpen'
       else if (e.code === 'Digit3') this.activeToolKey = 'raster'
       else if (e.code === 'Digit4') this.activeToolKey = 'contorno'
-      else if (e.code === 'Digit5') this.activeToolKey = 'ultra'
+  else if (e.code === 'Digit5') this.activeToolKey = 'ultra'
+  else if (e.code === 'Digit6') this.activeToolKey = 'rope'
       else if (e.code === 'KeyN') this.layers.create(`Capa ${this.layers.list().length + 1}`)
       else if (e.code === 'Delete') {
         const a = this.layers.active
@@ -350,7 +353,7 @@ export class VektorEngine {
   }
 
   setActiveTool(toolName: string) {
-    const name = (['pluma', 'vpen', 'raster', 'contorno', 'ultra'] as string[]).includes(toolName) ? (toolName as ToolKey) : 'pluma'
+  const name = (['pluma', 'vpen', 'raster', 'contorno', 'ultra', 'rope'] as string[]).includes(toolName) ? (toolName as ToolKey) : 'pluma'
     this.activeToolKey = name
   }
 
