@@ -128,6 +128,14 @@ export class LapizVectorTool {
     const geom = this.previewMesh.geometry
     const decPts = this.previewCfg.decimatePx > 0 ? decimateByDistance(this.points as any, this.previewCfg.decimatePx) : this.points
     const { strip, factors } = buildStrokeStrip(decPts as any, this._builderParams())
+    const idx = strip.indices
+    // Prefer 16-bit indices when possible to avoid OES_element_index_uint issues
+    let indices: Uint32Array | Uint16Array = idx
+    {
+      let max = 0
+      for (let i = 0; i < idx.length; i++) if (idx[i] > max) max = idx[i]
+      if (max < 65535) indices = new Uint16Array(idx)
+    }
     if (strip.indices.length < 3) {
       geom.buffers[0].data = new Float32Array(0)
       geom.buffers[0].update()
@@ -157,9 +165,9 @@ export class LapizVectorTool {
       g.buffers[0].update()
       g.buffers[1].data = strip.uvs
       g.buffers[1].update()
-      g.indexBuffer.data = strip.indices
+  g.indexBuffer.data = indices
       g.indexBuffer.update()
-      ;(this.previewMesh as any).size = strip.indices.length
+  ;(this.previewMesh as any).size = indices.length
       ;(g as any).vertexCount = strip.positions.length / 2
       // attach or update shader
       if (!this.usingPerVertexAlpha || !(this.previewMesh as any).shader || !(this.previewMesh as any).shader.resources?.uTint) {
@@ -176,9 +184,9 @@ export class LapizVectorTool {
       geom.buffers[0].update()
       geom.buffers[1].data = strip.uvs
       geom.buffers[1].update()
-      geom.indexBuffer.data = strip.indices
+  geom.indexBuffer.data = indices
       geom.indexBuffer.update()
-      ;(this.previewMesh as any).size = strip.indices.length
+  ;(this.previewMesh as any).size = indices.length
       ;(geom as any).vertexCount = strip.positions.length / 2
       // Ensure default alpha in mesh (uniform)
       this.previewMesh.alpha = this.opacity
@@ -201,6 +209,13 @@ export class LapizVectorTool {
       return null
     }
     const { strip, factors } = buildStrokeStrip(this.points as any, this._builderParams())
+    const idx = strip.indices
+    let indices: Uint32Array | Uint16Array = idx
+    {
+      let max = 0
+      for (let i = 0; i < idx.length; i++) if (idx[i] > max) max = idx[i]
+      if (max < 65535) indices = new Uint16Array(idx)
+    }
     let geom: MeshGeometry
     let usePerVertex = (this.pressureMode === 'opacity' || this.pressureMode === 'both') && !!factors.opacityFactor
     if (usePerVertex && factors.opacityFactor) {
@@ -208,12 +223,12 @@ export class LapizVectorTool {
       const n = fa.length
       const aAlpha = new Float32Array(n * 2)
       for (let i = 0; i < n; i++) { aAlpha[2 * i] = fa[i]; aAlpha[2 * i + 1] = fa[i] }
-      geom = new MeshGeometry({ positions: strip.positions, uvs: strip.uvs, indices: strip.indices })
+  geom = new MeshGeometry({ positions: strip.positions, uvs: strip.uvs, indices: indices as any })
       if (typeof (geom as any).addAttribute === 'function') {
         ;(geom as any).addAttribute('aAlpha', aAlpha, 1)
       }
     } else {
-      geom = new MeshGeometry({ positions: strip.positions, uvs: strip.uvs, indices: strip.indices })
+  geom = new MeshGeometry({ positions: strip.positions, uvs: strip.uvs, indices: indices as any })
     }
 
     // Usamos el shader por defecto de Pixi para que respete transformaciones (pan/zoom)
@@ -229,7 +244,7 @@ export class LapizVectorTool {
   ;(mesh as any).blendMode = this.blendMode
 
     this.container.addChild(mesh)
-  ;(mesh as any).size = strip.indices.length
+  ;(mesh as any).size = indices.length
   ;(geom as any).vertexCount = strip.positions.length / 2
 
     // Elimina la vista previa temporal

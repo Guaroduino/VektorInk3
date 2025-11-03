@@ -5,12 +5,11 @@ import { PlumaTool } from './tools/pluma'
 import { PincelContornoTool } from './tools/pincelContorno'
 import { LapizVectorTool } from './tools/lapizVector'
 import { LapizRasterTool } from './tools/lapizRaster'
-import { UltraPreviewPenTool } from './tools/ultraPreviewPen'
 import { SimpleRopeTool } from './tools/simpleRope'
 import { LayerBatch } from './graphics/LayerBatch'
 import { HistoryManager } from './history'
 
-export type ToolKey = 'pluma' | 'vpen' | 'raster' | 'contorno' | 'ultra' | 'rope'
+export type ToolKey = 'pluma' | 'vpen' | 'raster' | 'contorno' | 'rope'
 
 export class VektorEngine {
   private app: Application
@@ -96,7 +95,6 @@ export class VektorEngine {
       contorno: new PincelContornoTool(),
       vpen: new LapizVectorTool(),
       raster: new LapizRasterTool(),
-      ultra: new UltraPreviewPenTool(),
       rope: new SimpleRopeTool(),
     }
 
@@ -209,8 +207,7 @@ export class VektorEngine {
       else if (e.code === 'Digit2') this.activeToolKey = 'vpen'
       else if (e.code === 'Digit3') this.activeToolKey = 'raster'
       else if (e.code === 'Digit4') this.activeToolKey = 'contorno'
-  else if (e.code === 'Digit5') this.activeToolKey = 'ultra'
-  else if (e.code === 'Digit6') this.activeToolKey = 'rope'
+  else if (e.code === 'Digit5') this.activeToolKey = 'rope'
       else if (e.code === 'KeyN') this.layers.create(`Capa ${this.layers.list().length + 1}`)
       else if (e.code === 'Delete') {
         const a = this.layers.active
@@ -317,8 +314,6 @@ export class VektorEngine {
         default:
           if (!this.drawing) return
           this.drawing = false
-          // Avisar al worker para limpiar
-          if (this.previewEnabled && this.previewWorker) { try { this.previewWorker.postMessage({ type: 'end' }) } catch {} }
           const end = (tool as any).end
           if (typeof end === 'function') {
             // Algunas herramientas esperan layer en end, otras no
@@ -368,6 +363,10 @@ export class VektorEngine {
                   }
                 }
               } catch {}
+              // Ahora que el trazo final está en escena y registrado, limpimos el overlay
+              if (this.previewEnabled && this.previewWorker) {
+                try { requestAnimationFrame(() => { try { this.previewWorker?.postMessage({ type: 'end' }) } catch {} }) } catch {}
+              }
             })
           }
           break

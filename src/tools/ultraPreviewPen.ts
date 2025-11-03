@@ -1,23 +1,5 @@
-import {
-  Container,
-  Mesh,
-  MeshGeometry,
-  Shader,
-  GlProgram,
-  Texture,
-  Text,
-} from 'pixi.js'
-import type { InputSample } from '../input'
-import { buildStrokeStrip, type StrokeBuilderParams, type PressureMode } from '../geom/strokeBuilder'
-
-// Simple color -> vec3
-function colorToVec3(color: number): [number, number, number] {
-  const r = ((color >>> 0) >> 16) & 0xff
-  const g = ((color >>> 0) >> 8) & 0xff
-  const b = (color >>> 0) & 0xff
-  return [r / 255, g / 255, b / 255]
-}
-
+// [Removed] UltraPreviewPen: esta herramienta fue retirada. Archivo mantenido vacío intencionalmente.
+/*
 // --- SHADER CORREGIDO ---
 function createExtrudeShader(color: number, globalAlpha: number): Shader {
   try { (console as any).info?.('[UltraPreviewPen] createExtrudeShader() init') } catch {}
@@ -45,7 +27,7 @@ function createExtrudeShader(color: number, globalAlpha: number): Shader {
       vec2 prev = aPrev;
       vec2 curr = aPosition;
       vec2 next = aNext;
-      // keep aUV as used so the attribute remains available in the linked program
+  // keep aUV as used so the attribute remains available in the linked program
       vUV = aUV;
       vec2 dir = normalize(next - prev);
       if (!all(greaterThan(abs(dir), vec2(1e-5)))) {
@@ -299,3 +281,5 @@ export class UltraPreviewPenTool {
     }
   }
 }
+*/
+export {}
