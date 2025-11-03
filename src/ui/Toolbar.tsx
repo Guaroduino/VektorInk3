@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { useEngine } from './EngineContext'
-import { Pen, MousePointer2, Brush, Eraser, PanelLeftClose, PanelLeftOpen, Palette, Droplet, SlidersVertical, RotateCcw, RotateCw, Trash2 } from 'lucide-react'
+import { Pen, MousePointer2, Brush, Eraser, PanelLeftClose, PanelLeftOpen, Palette, Droplet, SlidersVertical, RotateCcw, RotateCw, Trash2, Zap } from 'lucide-react'
 import type { ToolKey } from '../VektorEngine'
 
 // Mantener los nombres de herramienta en línea con VektorEngine
@@ -12,6 +12,7 @@ const tools: { name: ToolName; icon: React.ReactNode; label: string }[] = [
   { name: 'vpen', icon: <MousePointer2 size={20} />, label: 'Vector' },
   { name: 'raster', icon: <Brush size={20} />, label: 'Raster' },
   { name: 'contorno', icon: <Eraser size={20} />, label: 'Contorno' },
+  { name: 'ultra', icon: <Zap size={20} />, label: 'Ultra' },
 ]
 
 export const Toolbar: React.FC = () => {
@@ -111,7 +112,7 @@ export const Toolbar: React.FC = () => {
   // Mantener la UI en sync cuando se usa el teclado (1-4)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.code === 'Digit1' || e.code === 'Digit2' || e.code === 'Digit3' || e.code === 'Digit4') {
+      if (e.code === 'Digit1' || e.code === 'Digit2' || e.code === 'Digit3' || e.code === 'Digit4' || e.code === 'Digit5') {
         setActiveTool(engine.getActiveTool() as ToolName)
       }
     }

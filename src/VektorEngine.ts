@@ -5,10 +5,11 @@ import { PlumaTool } from './tools/pluma'
 import { PincelContornoTool } from './tools/pincelContorno'
 import { LapizVectorTool } from './tools/lapizVector'
 import { LapizRasterTool } from './tools/lapizRaster'
+import { UltraPreviewPenTool } from './tools/ultraPreviewPen'
 import { LayerBatch } from './graphics/LayerBatch'
 import { HistoryManager } from './history'
 
-export type ToolKey = 'pluma' | 'vpen' | 'raster' | 'contorno'
+export type ToolKey = 'pluma' | 'vpen' | 'raster' | 'contorno' | 'ultra'
 
 export class VektorEngine {
   private app: Application
@@ -90,6 +91,7 @@ export class VektorEngine {
       contorno: new PincelContornoTool(),
       vpen: new LapizVectorTool(),
       raster: new LapizRasterTool(),
+      ultra: new UltraPreviewPenTool(),
     }
 
     // Propagar estilo inicial a todas las herramientas
@@ -132,6 +134,8 @@ export class VektorEngine {
       antialias: prefAA,
       // Resolution: use preference if present, otherwise 1 (presets may change it after init)
       resolution: prefRes ?? 1,
+      // Force WebGL so custom GlProgram shaders (Ultra preview) render on all platforms
+      preference: 'webgl' as any,
       // Sugerir hacer uso de la GPU de alto rendimiento cuando sea posible
       powerPreference: 'high-performance' as any,
       // Evitar costos extra de preservación de buffer si el renderer lo respeta
@@ -197,6 +201,7 @@ export class VektorEngine {
       else if (e.code === 'Digit2') this.activeToolKey = 'vpen'
       else if (e.code === 'Digit3') this.activeToolKey = 'raster'
       else if (e.code === 'Digit4') this.activeToolKey = 'contorno'
+      else if (e.code === 'Digit5') this.activeToolKey = 'ultra'
       else if (e.code === 'KeyN') this.layers.create(`Capa ${this.layers.list().length + 1}`)
       else if (e.code === 'Delete') {
         const a = this.layers.active
@@ -322,6 +327,14 @@ export class VektorEngine {
                     const idx = parent.getChildIndex(child)
                     this.history.push(this.history.makeAddChildAction(parent, child, idx))
                   }
+                } else if (res && res.mesh) {
+                  // Generic mesh result: keep as transformable object
+                  const parent = layer
+                  const child = res.mesh
+                  if (child && child.parent === parent) {
+                    const idx = parent.getChildIndex(child)
+                    this.history.push(this.history.makeAddChildAction(parent, child, idx))
+                  }
                 } else if (res && (res.graphic || res.sprite)) {
                   const child = res.graphic ?? res.sprite
                   if (child && child.parent === layer) {
@@ -337,7 +350,7 @@ export class VektorEngine {
   }
 
   setActiveTool(toolName: string) {
-    const name = (['pluma', 'vpen', 'raster', 'contorno'] as string[]).includes(toolName) ? (toolName as ToolKey) : 'pluma'
+    const name = (['pluma', 'vpen', 'raster', 'contorno', 'ultra'] as string[]).includes(toolName) ? (toolName as ToolKey) : 'pluma'
     this.activeToolKey = name
   }
 
