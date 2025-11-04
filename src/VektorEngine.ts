@@ -1,4 +1,4 @@
-import { Application, Container, Text } from 'pixi.js'
+import { Application, Container, Text, Mesh, MeshGeometry, Texture } from 'pixi.js'
 import { createInputCapture, type InputSample, type PointerPhase } from './input'
 import { LayersManager as LayerManager } from './layers'
 import { PlumaTool } from './tools/pluma'
@@ -76,6 +76,11 @@ export class VektorEngine {
   private previewOverlayCanvas: HTMLCanvasElement | null = null
   private previewEnabled: boolean = false
 
+  // --- Project I/O ---
+  private projectVersion = 1
+  private autosaveTimer: number | null = null
+  private autosaveEnabled: boolean = true
+
   constructor() {
     // Núcleo Pixi (se termina de inicializar en init())
     this.app = new Application()
@@ -103,6 +108,9 @@ export class VektorEngine {
 
     // Limit history to 20 steps
     try { this.history.setLimit?.(20) } catch {}
+
+    // Autosave when history changes
+    try { this.onHistoryChange(() => this._scheduleAutosave()) } catch {}
   }
 
   private getActiveLayerNode() {
@@ -251,6 +259,9 @@ export class VektorEngine {
     }
     window.addEventListener('beforeunload', onUnload)
     this.removeBeforeUnload = () => window.removeEventListener('beforeunload', onUnload)
+
+    // Intentar cargar autosave si existe
+    try { this._tryLoadAutosave() } catch {}
   }
 
   // Handler de muestras separado para poder reusar al reconfigurar input
@@ -593,18 +604,21 @@ export class VektorEngine {
   setStrokeSize(size: number) {
     this.strokeSize = Math.max(1, Math.min(128, Math.floor(size)))
     this.applyStyleToTools()
+    this._scheduleAutosave()
   }
   getStrokeSize() { return this.strokeSize }
 
   setStrokeColor(color: number) {
     this.strokeColor = color >>> 0
     this.applyStyleToTools()
+    this._scheduleAutosave()
   }
   getStrokeColor() { return this.strokeColor }
 
   setOpacity(alpha: number) {
     this.opacity = Math.max(0.01, Math.min(1, alpha))
     this.applyStyleToTools()
+    this._scheduleAutosave()
   }
   getOpacity() { return this.opacity }
 
@@ -613,6 +627,7 @@ export class VektorEngine {
     const allowed = new Set(['normal', 'add', 'multiply', 'screen'])
     this.blendMode = allowed.has(mode) ? mode : 'normal'
     this.applyStyleToTools()
+    this._scheduleAutosave()
   }
   getBlendMode() { return this.blendMode }
 
@@ -620,6 +635,7 @@ export class VektorEngine {
   setPreviewQuality(q: number) {
     this.previewQuality = Math.max(0, Math.min(1, q))
     this.applyStyleToTools()
+    this._scheduleAutosave()
   }
   getPreviewQuality() { return this.previewQuality }
   // --- Latency experiment API ---
@@ -639,6 +655,7 @@ export class VektorEngine {
     this.applyStyleToTools()
     // Intentar activar previsualización offscreen cuando está en modo baja latencia
     if (this.lowLatency) this._maybeEnableOffscreenPreview()
+    this._scheduleAutosave()
   }
   getLowLatencyMode() { return this.lowLatency }
 
@@ -647,6 +664,7 @@ export class VektorEngine {
     if (typeof params.smoothing === 'number') this.freehand.smoothing = Math.max(0, Math.min(1, params.smoothing))
     if (typeof params.streamline === 'number') this.freehand.streamline = Math.max(0, Math.min(1, params.streamline))
     this.applyStyleToTools()
+    this._scheduleAutosave()
   }
   getFreehandParams() { return { ...this.freehand } }
 
@@ -663,6 +681,7 @@ export class VektorEngine {
     if (typeof params.frequency === 'number') this.jitter.frequency = Math.max(0, params.frequency)
     if (params.domain === 'distance' || params.domain === 'time') this.jitter.domain = params.domain
     this.applyStyleToTools()
+    this._scheduleAutosave()
   }
   getJitterParams() { return { ...this.jitter } }
 
@@ -674,6 +693,7 @@ export class VektorEngine {
         .toString(16)
         .padStart(6, '0')}`
     } catch {}
+    this._scheduleAutosave()
   }
   getBackgroundColor() { return this.backgroundColor }
 
@@ -816,5 +836,156 @@ export class VektorEngine {
     this.previewOverlayCanvas = null
     // Rehabilitar preview interno de herramientas
     try { for (const key of Object.keys(this.tools) as ToolKey[]) { this.tools[key]?.setExternalPreviewEnabled?.(false) } } catch {}
+  }
+
+  // --- Project save/load ---
+  /**
+   * Export current canvas, layers and settings to a portable JSON structure.
+   */
+  exportProject() {
+    const layersOut: any[] = []
+    try {
+      const layers = this.layers.list()
+      for (const l of layers) {
+        const strokes: any[] = []
+        for (const child of l.node.children) {
+          // Serialize Mesh-based strokes and batches
+          if ((child as any) instanceof Mesh) {
+            const mesh = child as unknown as Mesh
+            const geom = mesh.geometry
+            const pos = (geom.buffers?.[0]?.data as Float32Array) ?? new Float32Array()
+            const uvs = (geom.buffers?.[1]?.data as Float32Array) ?? new Float32Array(pos.length)
+            const idx = (geom.indexBuffer?.data as Uint32Array | Uint16Array) ?? new Uint16Array()
+            const blend = (mesh as any).blendMode ?? 'normal'
+            strokes.push({
+              type: 'mesh',
+              positions: Array.from(pos),
+              uvs: Array.from(uvs),
+              indices: Array.from(idx as any),
+              style: { tint: (mesh as any).tint ?? 0xffffff, alpha: mesh.alpha ?? 1, blendMode: blend },
+              transform: { x: mesh.x || 0, y: mesh.y || 0, rotation: mesh.rotation || 0, scaleX: mesh.scale?.x ?? 1, scaleY: mesh.scale?.y ?? 1 },
+            })
+          }
+          // TODO: extend for Sprite/Graphics if needed
+        }
+        layersOut.push({ id: l.id, name: l.name, strokes })
+      }
+    } catch {}
+    const project = {
+      meta: { app: 'VektorInk3', version: this.projectVersion },
+      settings: {
+        backgroundColor: this.backgroundColor >>> 0,
+        style: { strokeColor: this.strokeColor >>> 0, strokeSize: this.strokeSize, opacity: this.opacity, blendMode: this.blendMode },
+        previewQuality: this.previewQuality,
+        lowLatency: this.lowLatency,
+        rendererResolution: this.getRendererResolution(),
+        freehand: { ...this.freehand },
+        jitter: { ...this.jitter },
+      },
+      layers: layersOut,
+    }
+    return project
+  }
+
+  /**
+   * Import project JSON, replacing current canvas/layers. Returns true on success.
+   */
+  importProject(data: any): boolean {
+    try {
+      if (!data || typeof data !== 'object') return false
+      const layersIn: any[] = Array.isArray(data.layers) ? data.layers : []
+  // Clear existing layers
+      try { for (const l of this.layers.list()) this.layers.remove(l.id) } catch {}
+      // Apply settings first
+      try {
+        const s = data.settings || {}
+        if (typeof s.backgroundColor === 'number') this.setBackgroundColor(s.backgroundColor >>> 0)
+        if (s.style) {
+          if (typeof s.style.strokeColor === 'number') this.setStrokeColor(s.style.strokeColor >>> 0)
+          if (typeof s.style.strokeSize === 'number') this.setStrokeSize(s.style.strokeSize)
+          if (typeof s.style.opacity === 'number') this.setOpacity(s.style.opacity)
+          if (typeof s.style.blendMode === 'string') this.setBlendMode(s.style.blendMode)
+        }
+        if (typeof s.previewQuality === 'number') this.setPreviewQuality(s.previewQuality)
+        if (typeof s.lowLatency === 'boolean') this.setLowLatencyMode(s.lowLatency)
+        if (typeof s.rendererResolution === 'number') this.setRendererResolution(s.rendererResolution)
+        if (s.freehand) this.setFreehandParams(s.freehand)
+        if (s.jitter) this.setJitterParams(s.jitter)
+      } catch {}
+      // Recreate layers and strokes
+      for (const lay of layersIn) {
+        const layer = this.layers.create(lay.name || 'Capa')
+        const strokes: any[] = Array.isArray(lay.strokes) ? lay.strokes : []
+        for (const st of strokes) {
+          if (st && st.type === 'mesh') {
+            const positions = new Float32Array(Array.isArray(st.positions) ? st.positions : [])
+            const uvs = new Float32Array(Array.isArray(st.uvs) ? st.uvs : new Array(positions.length).fill(0))
+            const indicesArray: number[] = Array.isArray(st.indices) ? st.indices : []
+            // Prefer Uint32, Pixi will handle if unsupported
+            const indices = new Uint32Array(indicesArray)
+            const geom = new MeshGeometry({ positions, uvs, indices: indices as any })
+            const mesh = new Mesh({ geometry: geom, texture: Texture.WHITE })
+            // Style
+            try { (mesh as any).tint = (st.style?.tint ?? 0xffffff) >>> 0 } catch {}
+            try { mesh.alpha = typeof st.style?.alpha === 'number' ? st.style.alpha : 1 } catch {}
+            try { (mesh as any).blendMode = st.style?.blendMode ?? 'normal' } catch {}
+            // Transform
+            try {
+              mesh.x = st.transform?.x ?? 0
+              mesh.y = st.transform?.y ?? 0
+              mesh.rotation = st.transform?.rotation ?? 0
+              mesh.scale.set(st.transform?.scaleX ?? 1, st.transform?.scaleY ?? 1)
+            } catch {}
+            layer.node.addChild(mesh)
+          }
+        }
+      }
+      // Autosave after successful import
+      this._scheduleAutosave()
+      return true
+    } catch (err) {
+      console.warn('[ImportProject] failed', err)
+      return false
+    }
+  }
+
+  // --- Autosave controls ---
+  setAutosaveEnabled(on: boolean) {
+    this.autosaveEnabled = !!on
+    // Write preference to localStorage for persistence
+    try { localStorage.setItem('vi.autosave.enabled', this.autosaveEnabled ? '1' : '0') } catch {}
+  }
+  getAutosaveEnabled() { return this.autosaveEnabled }
+  restoreAutosave(): boolean {
+    try { this._tryLoadAutosave(); return true } catch { return false }
+  }
+
+  private _scheduleAutosave() {
+    if (!this.autosaveEnabled) return
+    try { if (this.autosaveTimer) clearTimeout(this.autosaveTimer) } catch {}
+    this.autosaveTimer = setTimeout(() => {
+      this.autosaveTimer = null
+      try { this._doAutosave() } catch {}
+    }, 400) as unknown as number
+  }
+  private _doAutosave() {
+    try {
+      const data = this.exportProject()
+      const json = JSON.stringify(data)
+      localStorage.setItem('vi.autosave', json)
+      localStorage.setItem('vi.autosave.at', Date.now().toString())
+    } catch (e) { console.debug?.('[Autosave] failed', e) }
+  }
+  private _tryLoadAutosave() {
+    try {
+      // Read persisted toggle
+      const en = localStorage.getItem('vi.autosave.enabled')
+      if (en != null) this.autosaveEnabled = en === '1'
+      const json = localStorage.getItem('vi.autosave')
+      if (!json) return
+      const data = JSON.parse(json)
+      const ok = this.importProject(data)
+      if (ok) console.info?.('[Autosave] restored')
+    } catch (e) { console.debug?.('[Autosave] restore failed', e) }
   }
 }

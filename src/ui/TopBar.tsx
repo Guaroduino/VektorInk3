@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useEngine } from './EngineContext'
-import { Activity, Settings2, SlidersVertical, Palette, Droplet, Maximize2, Zap, Square, Plus, X, Sun, Rocket, Sparkles, Wand2, RotateCcw, MousePointer2 } from 'lucide-react'
+import { PencilLine, Settings2, SlidersVertical, Palette, Droplet, Maximize2, Zap, Square, Plus, X, Sun, Rocket, Sparkles, Wand2, RotateCcw, MousePointer2, Download, Upload, History, Trash2, RefreshCcw } from 'lucide-react'
 
 /**
  * TopBar: barra superior continua con:
@@ -12,12 +12,23 @@ export const TopBar: React.FC = () => {
   const barRef = useRef<HTMLDivElement | null>(null)
   const [openGlobal, setOpenGlobal] = useState(false)
   const [openRope, setOpenRope] = useState(false)
-  // Center presets
+  // Center presets (4 columnas: color arriba, tamaño abajo)
   const [colorPresets, setColorPresets] = useState<number[]>([0xffffff, 0x000000, 0xff4d4d, 0x00c2ff])
   const [sizePresets, setSizePresets] = useState<number[]>([4, 8, 12, 20])
   const colorInputs = [useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null)]
   const [editingSizeIdx, setEditingSizeIdx] = useState<number | null>(null)
   const [editingSizeVal, setEditingSizeVal] = useState<number>(8)
+  const sizeTimers = useRef<Record<number, number | null>>({})
+  const sizeLPTrig = useRef<Record<number, boolean>>({})
+  const colorTimers = useRef<Record<number, number | null>>({})
+  const colorLPTrig = useRef<Record<number, boolean>>({})
+  const sizeBtnRefs = useRef<Array<HTMLButtonElement | null>>([])
+  const sizePopoverRef = useRef<HTMLDivElement | null>(null)
+  const importInputRef = useRef<HTMLInputElement | null>(null)
+  const [autosaveEnabled, setAutosaveEnabled] = useState<boolean>(() => (engine as any).getAutosaveEnabled?.() ?? true)
+  const [lastAutosaveAt, setLastAutosaveAt] = useState<string>(() => {
+    try { const t = localStorage.getItem('vi.autosave.at'); return t ? new Date(parseInt(t,10)).toLocaleString() : '—' } catch { return '—' }
+  })
 
   // Local state (aplica via engine)
   const [size, setSize] = useState(() => engine.getStrokeSize?.() ?? 8)
@@ -34,15 +45,26 @@ export const TopBar: React.FC = () => {
 
   // Outside click to close popovers
   useEffect(() => {
-    const onDoc = (e: MouseEvent) => {
+    const onDoc = (e: PointerEvent) => {
+      const target = e.target as Node
       if (!barRef.current) return
-      if (!barRef.current.contains(e.target as Node)) {
-        setOpenGlobal(false); setOpenRope(false)
+      // Click fuera de toda la barra: cierra todo
+      if (!barRef.current.contains(target)) {
+        setOpenGlobal(false); setOpenRope(false); setEditingSizeIdx(null)
+        return
+      }
+      // Dentro de la barra: si hay slider abierto y el click no es en el botón activo ni en el popover, ciérralo
+      if (editingSizeIdx !== null) {
+        const btnEl = sizeBtnRefs.current[editingSizeIdx] || null
+        const popEl = sizePopoverRef.current
+        if (btnEl && btnEl.contains(target)) return
+        if (popEl && popEl.contains(target)) return
+        setEditingSizeIdx(null)
       }
     }
-    document.addEventListener('mousedown', onDoc)
-    return () => document.removeEventListener('mousedown', onDoc)
-  }, [])
+    document.addEventListener('pointerdown', onDoc)
+    return () => document.removeEventListener('pointerdown', onDoc)
+  }, [editingSizeIdx])
 
   // Tool: SimpleRope button interactions (long-press)
   const lpTimer = useRef<number | null>(null)
@@ -75,6 +97,79 @@ export const TopBar: React.FC = () => {
   const onPreview = (v:number) => { setPreviewQ(v); engine.setPreviewQuality?.(v) }
   const onScale = (v:number) => { setRenderScale(v); (engine as any).setRendererResolution?.(v) }
   const onLowLat = (on:boolean) => { setLowLatency(on); (engine as any).setLowLatencyMode?.(on) }
+  const onAutosaveToggle = (on: boolean) => { setAutosaveEnabled(on); (engine as any).setAutosaveEnabled?.(on) }
+  const onRestoreAutosave = () => {
+    const ok = (engine as any).restoreAutosave?.()
+    // Refresh some local UI states that may have changed
+    try {
+      setBgHex(`#${((engine.getBackgroundColor?.() ?? 0x111111)>>>0).toString(16).padStart(6,'0')}`)
+      const t = localStorage.getItem('vi.autosave.at'); if (t) setLastAutosaveAt(new Date(parseInt(t,10)).toLocaleString())
+    } catch {}
+    if (!ok) console.warn('[TopBar] restoreAutosave returned false')
+  }
+
+  // Update last autosave timestamp whenever the menu opens
+  useEffect(() => {
+    if (openGlobal) {
+      try { const t = localStorage.getItem('vi.autosave.at'); setLastAutosaveAt(t ? new Date(parseInt(t,10)).toLocaleString() : '—') } catch {}
+    }
+  }, [openGlobal])
+
+  // Export/Import handlers
+  const onExport = () => {
+    try {
+      const data = (engine as any).exportProject?.()
+      if (!data) return
+      const json = JSON.stringify(data)
+      const blob = new Blob([json], { type: 'application/json' })
+      const a = document.createElement('a')
+      const url = URL.createObjectURL(blob)
+      a.href = url
+      const ts = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')
+      const defName = `vektorink-${ts}`
+      let name = (window as any).prompt?.('Nombre del archivo (.json)', defName) as string | null
+      if (!name || !name.trim()) name = defName
+      // Sanear nombre para sistemas Windows/macOS
+      name = name.replace(/[\\/:*?"<>|]+/g, '-').trim()
+      if (!name.toLowerCase().endsWith('.json')) name = `${name}.json`
+      a.download = name
+      document.body.appendChild(a)
+      a.click()
+      setTimeout(()=>{ URL.revokeObjectURL(url); document.body.removeChild(a) }, 0)
+    } catch (e) { console.warn('[Export] failed', e) }
+  }
+  const onImportClick = () => { try { importInputRef.current?.click() } catch {} }
+  const onImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    try {
+      const file = e.target.files?.[0]
+      if (!file) return
+      const text = await file.text()
+      const data = JSON.parse(text)
+      const ok = (engine as any).importProject?.(data)
+      if (!ok) console.warn('[Import] engine rejected file')
+    } catch (err) {
+      console.warn('[Import] failed', err)
+    } finally {
+      try { e.target.value = '' } catch {}
+    }
+  }
+  const onClearCanvas = () => {
+    try {
+      const yes = (window as any).confirm?.('¿Borrar todo el lienzo? Esta acción se puede deshacer con Undo.')
+      if (!yes) return
+      ;(engine as any).clearCanvas?.()
+    } catch (e) { console.warn('[ClearCanvas] failed', e) }
+  }
+  const onResetApp = () => {
+    const yes = (window as any).confirm?.('¿Reiniciar la app desde cero? Se borrará el autosave y se recargará la página.')
+    if (!yes) return
+    try {
+      // Borrar autosave para arrancar en blanco (conserva la preferencia de autosave enabled)
+      localStorage.removeItem('vi.autosave')
+      localStorage.removeItem('vi.autosave.at')
+    } catch {}
+    try { window.location.reload() } catch {}
+  }
 
   return (
     <div ref={barRef} className="absolute top-0 left-0 right-0 z-[9999] pointer-events-auto">
@@ -90,32 +185,38 @@ export const TopBar: React.FC = () => {
             onMouseLeave={onRopeLeave}
             onTouchStart={onRopeDown}
             onTouchEnd={onRopeUp}
+            onDoubleClick={() => { if (lpTimer.current) { window.clearTimeout(lpTimer.current); lpTimer.current = null }; lpTriggered.current = true; setOpenRope(v=>!v); setOpenGlobal(false) }}
             className="p-1.5 rounded-md border border-gray-300 hover:bg-gray-100"
-            title="SimpleRope (click) • Ajustes (mantener)"
+            title="SimpleRope (click) • Ajustes (mantener o doble click)"
           >
-            <Activity size={18} />
+            <PencilLine size={18} />
           </button>
         </div>
-        {/* Center: presets */}
-        <div className="flex-1 flex items-center justify-center gap-3">
-          {/* Color presets */}
+        {/* Center: presets (dos grupos, alineados verticalmente) */}
+        <div className="flex-1 flex items-center justify-center gap-4">
+          {/* Grupo colores */}
           <div className="flex items-center gap-1">
             {colorPresets.map((c, i) => (
-              <div key={i} className="relative">
+              <div key={`c-${i}`} className="relative inline-block">
                 <button
                   aria-label={`Color ${i+1}`}
-                  onClick={() => { engine.setStrokeColor?.(c) }}
+                  onClick={() => { engine.setStrokeColor?.(c); setStrokeHex(`#${(c>>>0).toString(16).padStart(6,'0')}`) }}
                   onDoubleClick={() => { try { colorInputs[i].current?.click() } catch {} }}
+                  onMouseDown={() => { colorLPTrig.current[i]=false; if(colorTimers.current[i]) window.clearTimeout(colorTimers.current[i]!); colorTimers.current[i]=window.setTimeout(()=>{ colorLPTrig.current[i]=true; try { colorInputs[i].current?.click() } catch {} }, LP_MS) }}
+                  onMouseUp={() => { if(colorTimers.current[i]){ window.clearTimeout(colorTimers.current[i]!); colorTimers.current[i]=null } }}
+                  onMouseLeave={() => { if(colorTimers.current[i]){ window.clearTimeout(colorTimers.current[i]!); colorTimers.current[i]=null } }}
+                  onTouchStart={() => { colorLPTrig.current[i]=false; if(colorTimers.current[i]) window.clearTimeout(colorTimers.current[i]!); colorTimers.current[i]=window.setTimeout(()=>{ colorLPTrig.current[i]=true; try { colorInputs[i].current?.click() } catch {} }, LP_MS) }}
+                  onTouchEnd={() => { if(colorTimers.current[i]){ window.clearTimeout(colorTimers.current[i]!); colorTimers.current[i]=null } }}
                   className="h-6 w-6 rounded-md border border-gray-400"
                   style={{ backgroundColor: `#${(c>>>0).toString(16).padStart(6,'0')}` }}
-                  title="Click: usar color • Doble click: editar"
+                  title="Click: usar color • Doble click/long-press: editar"
                 />
-                {/* Hidden color input to edit preset */}
                 <input ref={colorInputs[i]} type="color" defaultValue={`#${(c>>>0).toString(16).padStart(6,'0')}`}
                   onChange={(e)=>{
                     const hex = e.target.value
                     const n = parseInt(hex.replace('#',''),16)>>>0
                     setColorPresets(prev => prev.map((v,idx)=> idx===i ? n : v))
+                    setStrokeHex(hex)
                     engine.setStrokeColor?.(n)
                   }}
                   className="absolute opacity-0 pointer-events-none -z-10"
@@ -123,33 +224,68 @@ export const TopBar: React.FC = () => {
               </div>
             ))}
           </div>
-          {/* Size presets */}
+
+          {/* Grupo tamaños */}
           <div className="flex items-center gap-1">
             {sizePresets.map((s, i) => (
-              <div key={i} className="relative">
-                {editingSizeIdx === i ? (
-                  <input type="number" min={1} max={128} step={1} value={editingSizeVal}
-                    onChange={(e)=> setEditingSizeVal(Math.max(1, Math.min(128, Number(e.target.value)||1)))}
-                    onBlur={()=>{ const v=editingSizeVal|0; setSizePresets(prev=> prev.map((x,idx)=> idx===i? v : x)); engine.setStrokeSize?.(v); setEditingSizeIdx(null) }}
-                    onKeyDown={(e)=>{ if(e.key==='Enter'){ (e.target as HTMLInputElement).blur() } else if(e.key==='Escape'){ setEditingSizeIdx(null) } }}
-                    className="w-14 h-6 text-xs px-1 border border-gray-300 rounded-md"
-                    autoFocus
-                  />
-                ) : (
-                  <button
-                    aria-label={`Size ${s}px`}
-                    onClick={() => { engine.setStrokeSize?.(s); setSize(s) }}
-                    onDoubleClick={() => { setEditingSizeIdx(i); setEditingSizeVal(s) }}
-                    className="h-6 px-2 text-xs rounded-md border border-gray-300 hover:bg-gray-100"
-                    title="Click: usar tamaño • Doble click: editar"
-                  >{s}px</button>
+              <div key={`s-${i}`} className="relative inline-block">
+                <button
+                  aria-label={`Size ${s}px`}
+                  onClick={() => { engine.setStrokeSize?.(s); setSize(s); if (editingSizeIdx === i) setEditingSizeIdx(null) }}
+                  onDoubleClick={() => { setEditingSizeIdx(i); setEditingSizeVal(s) }}
+                  onMouseDown={() => { sizeLPTrig.current[i]=false; if(sizeTimers.current[i]) window.clearTimeout(sizeTimers.current[i]!); sizeTimers.current[i]=window.setTimeout(()=>{ sizeLPTrig.current[i]=true; setEditingSizeIdx(i); setEditingSizeVal(s) }, LP_MS) }}
+                  onMouseUp={() => { if(sizeTimers.current[i]){ window.clearTimeout(sizeTimers.current[i]!); sizeTimers.current[i]=null } }}
+                  onMouseLeave={() => { if(sizeTimers.current[i]){ window.clearTimeout(sizeTimers.current[i]!); sizeTimers.current[i]=null } }}
+                  onTouchStart={() => { sizeLPTrig.current[i]=false; if(sizeTimers.current[i]) window.clearTimeout(sizeTimers.current[i]!); sizeTimers.current[i]=window.setTimeout(()=>{ sizeLPTrig.current[i]=true; setEditingSizeIdx(i); setEditingSizeVal(s) }, LP_MS) }}
+                  onTouchEnd={() => { if(sizeTimers.current[i]){ window.clearTimeout(sizeTimers.current[i]!); sizeTimers.current[i]=null } }}
+                  className="h-6 min-w-12 px-2 text-xs leading-none rounded-md border border-gray-300 hover:bg-gray-100 flex items-center justify-center"
+                  title="Click: usar tamaño • Doble click/long-press: editar"
+                  ref={(el)=>{ sizeBtnRefs.current[i]=el }}
+                >{s}px</button>
+
+                {editingSizeIdx === i && (
+                  <div ref={sizePopoverRef} className="absolute top-9 left-1/2 -translate-x-1/2 bg-white border border-gray-300 rounded-md shadow-lg p-2 w-44 z-[10000]">
+                    <div className="text-[11px] text-gray-700 mb-1">Tamaño: {editingSizeVal}px</div>
+                    <input type="range" min={1} max={128} step={1} value={editingSizeVal}
+                      onChange={(e)=>{ const v = Number(e.target.value)||1; setEditingSizeVal(v); engine.setStrokeSize?.(v) }}
+                      className="w-full accent-blue-500"
+                    />
+                    {/* Cierra con click fuera o tocando el botón de tamaño nuevamente */}
+                  </div>
                 )}
               </div>
             ))}
           </div>
         </div>
-        {/* Right: global settings button */}
+  {/* Right: guardar/cargar • fondo • botón ajustes globales */}
         <div className="flex items-center gap-1">
+          <button
+            aria-label="Guardar (.json)"
+            onClick={onExport}
+            className="p-1.5 rounded-md border border-gray-300 hover:bg-gray-100"
+            title="Guardar (.json)"
+          >
+            <Download size={18} />
+          </button>
+          <div className="relative">
+            <button
+              aria-label="Cargar (.json)"
+              onClick={onImportClick}
+              className="p-1.5 rounded-md border border-gray-300 hover:bg-gray-100"
+              title="Cargar (.json)"
+            >
+              <Upload size={18} />
+            </button>
+            <input ref={importInputRef} type="file" accept="application/json,.json" onChange={onImportFile} className="absolute opacity-0 pointer-events-none -z-10" />
+          </div>
+          <input
+            type="color"
+            value={bgHex}
+            onChange={(e)=>onBg(e.target.value)}
+            className="h-7 w-7 rounded-md border border-gray-300 bg-transparent p-0"
+            title="Color de fondo"
+            aria-label="Color de fondo"
+          />
           <button
             aria-label="Global settings"
             onClick={() => { setOpenGlobal(v=>!v); setOpenRope(false) }}
@@ -212,6 +348,32 @@ export const TopBar: React.FC = () => {
                 <input type="checkbox" checked={lowLatency} onChange={e=>onLowLat(e.target.checked)} />
                 <Zap size={14} className="opacity-80" />
               </div>
+            </div>
+            <div className="flex items-center gap-2" title="Autosave">
+              <input type="checkbox" checked={autosaveEnabled} onChange={e=>onAutosaveToggle(e.target.checked)} />
+              <span className="text-sm">Autosave</span>
+              <div className="ml-auto flex items-center gap-2 text-[11px] text-gray-600">
+                <History size={14} className="opacity-80" />
+                <span>Último: {lastAutosaveAt}</span>
+                <button className="ml-2 px-2 py-0.5 text-xs border border-gray-300 rounded-md hover:bg-gray-100" onClick={onRestoreAutosave}>Restaurar</button>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 pt-1" title="Canvas">
+              <span className="text-sm">Canvas</span>
+              <div className="ml-auto flex items-center gap-2">
+                <button className="px-2 py-1 text-xs border border-gray-300 rounded-md hover:bg-gray-100 flex items-center gap-1" onClick={onClearCanvas}>
+                  <Trash2 size={14} />
+                  Limpiar
+                </button>
+                <button className="px-2 py-1 text-xs border border-gray-300 rounded-md hover:bg-gray-100 flex items-center gap-1" onClick={onResetApp}>
+                  <RefreshCcw size={14} />
+                  Reiniciar
+                </button>
+              </div>
+              
+            </div>
+            <div className="pl-6 pr-2 -mt-1 mb-1 text-[11px] text-gray-600">
+              Reiniciar borra el autosave y recarga la app para empezar en blanco.
             </div>
             <div className="flex items-center gap-1" title="Presets">
               <button aria-label="Performance" className="p-1.5 rounded-md border border-gray-300 hover:bg-gray-100" onClick={()=>{(engine as any).applyPreset?.('performance')}}>
