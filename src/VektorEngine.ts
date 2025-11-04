@@ -75,6 +75,10 @@ export class VektorEngine {
   private previewWorker: Worker | null = null
   private previewOverlayCanvas: HTMLCanvasElement | null = null
   private previewEnabled: boolean = false
+  // Multi-touch gesture state (pinch-zoom + two-finger pan)
+  private pointerPositions = new Map<number, { x: number; y: number; pointerType: string }>()
+  private gestureActive: boolean = false
+  private gestureStart = { zoom: 1, dist: 0, midX: 0, midY: 0 }
 
   // --- Project I/O ---
   private projectVersion = 1
@@ -168,6 +172,8 @@ export class VektorEngine {
 
   // Montar canvas principal
   container.appendChild(this.app.canvas)
+  // Disable browser touch gestures to ensure consistent pointer events for pinch/pan
+  try { (this.app.canvas as HTMLCanvasElement).style.touchAction = 'none' } catch {}
   // Intentar preparar overlay de previsualización offscreen si está habilitado
   this._maybeEnableOffscreenPreview()
     // Create overlay watermark (Scale/MSAA) and start FPS loop
@@ -265,7 +271,59 @@ export class VektorEngine {
   }
 
   // Handler de muestras separado para poder reusar al reconfigurar input
-  private _onSamples(_id: number, samples: InputSample[], phase: PointerPhase) {
+  private _onSamples(id: number, samples: InputSample[], phase: PointerPhase, _rawEvent?: PointerEvent) {
+      // Update active pointer map for multi-touch gestures
+      const last = samples[samples.length - 1]
+      if (last) {
+        if (phase === 'start' || phase === 'move') {
+          this.pointerPositions.set(id, { x: last.x, y: last.y, pointerType: last.pointerType })
+        } else if (phase === 'end' || phase === 'cancel') {
+          this.pointerPositions.delete(id)
+        }
+      }
+
+      // Consider only touch contacts for pinch/pan to avoid mixing mouse/pen
+      const touchPointers = Array.from(this.pointerPositions.entries()).filter(([, v]) => v.pointerType === 'touch') as Array<[number, { x: number; y: number; pointerType: string }]>;
+      // If this is the first contact of a new interaction, clear any stale state
+      if (phase === 'start' && touchPointers.length === 1 && this.gestureActive) {
+        this.gestureActive = false
+      }
+      // Pinch-zoom + two-finger pan when two touch pointers are active
+      if (touchPointers.length >= 2) {
+        const a = touchPointers[0]
+        const b = touchPointers[1]
+        if (a && b) {
+          const ax = a[1].x, ay = a[1].y
+          const bx = b[1].x, by = b[1].y
+          const midX = (ax + bx) * 0.5
+          const midY = (ay + by) * 0.5
+          const dx = bx - ax
+          const dy = by - ay
+          const dist = Math.hypot(dx, dy)
+          if (!this.gestureActive) {
+            this.gestureActive = true
+            this.gestureStart.zoom = this.zoom
+            this.gestureStart.dist = Math.max(1e-3, dist)
+            this.gestureStart.midX = midX
+            this.gestureStart.midY = midY
+            // If a stroke was in progress, cancel it to avoid stuck state when starting a gesture
+            if (this.drawing) {
+              this.drawing = false
+              try { this.tools[this.activeToolKey]?.cancel?.() } catch {}
+              // Clear external preview overlay if any
+              try { if (this.previewEnabled && this.previewWorker) this.previewWorker.postMessage({ type: 'end' }) } catch {}
+            }
+          }
+          const factor = Math.max(0.05, Math.min(20, dist / Math.max(1e-3, this.gestureStart.dist)))
+          const targetZoom = this.gestureStart.zoom * factor
+          this.setZoom(targetZoom, midX, midY)
+          // Skip preview/drawing while gesturing
+          return
+        }
+      } else if (this.gestureActive) {
+        // Gesture ends when fewer than two touch pointers remain
+        this.gestureActive = false
+      }
       // Enviar a worker de previsualización (coordenadas en espacio de canvas) si está habilitado,
       // excepto cuando la herramienta es 'rope' y requiere preview fiel (exacto).
       if (this.previewEnabled && this.previewWorker && !this.panMode && !this.isPanningDrag) {
@@ -494,6 +552,8 @@ export class VektorEngine {
   container.appendChild(this.app.canvas)
   // recreate overlay if needed
   this._maybeEnableOffscreenPreview(true)
+    // Ensure touch gestures are disabled on the canvas after renderer reload
+    try { (this.app.canvas as HTMLCanvasElement).style.touchAction = 'none' } catch {}
     // restore background styles
     try { ;(this.app.renderer as any).background.color = this.backgroundColor } catch {}
     try { ;(this.app.canvas as HTMLCanvasElement).style.backgroundColor = `#${this.backgroundColor.toString(16).padStart(6, '0')}` } catch {}
