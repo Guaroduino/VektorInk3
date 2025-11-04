@@ -314,7 +314,11 @@ export class VektorEngine {
         case 'start':
           this.drawing = true
           // Si usamos preview offscreen, notificar a la herramienta para que no pinte su propio preview
-          try { (this.tools[this.activeToolKey]?.setExternalPreviewEnabled?.(this.previewEnabled)) } catch {}
+          // EXCEPTO para 'rope', donde queremos previsualización idéntica al trazo final (mismo strip de geometría)
+          try {
+            const useExternal = this.previewEnabled && this.activeToolKey !== 'rope'
+            this.tools[this.activeToolKey]?.setExternalPreviewEnabled?.(useExternal)
+          } catch {}
           tool.start(layer)
           tool.update(remapped)
           break
