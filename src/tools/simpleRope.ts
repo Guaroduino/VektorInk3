@@ -5,7 +5,7 @@ import { buildStrokeStrip, type StrokeBuilderParams } from '../geom/strokeBuilde
 export class SimpleRopeTool {
   private container: Container | null = null
   private previewMesh: Mesh | null = null
-  private points: { x: number; y: number }[] = []
+  private points: { x: number; y: number; pressure?: number; time?: number }[] = []
   private externalPreview = false
 
   // Style
@@ -13,6 +13,13 @@ export class SimpleRopeTool {
   private strokeColor = 0xffffff
   private opacity = 1.0
   private blendMode: any = 'normal'
+  // Pressure & dynamics
+  private pressureSensitivity = true
+  private pressureMode: StrokeBuilderParams['pressureMode'] = 'width'
+  private pressureCurve: StrokeBuilderParams['pressureCurve'] = 'sqrt'
+  private widthScaleRange: [number, number] = [0.3, 1.0]
+  private opacityRange: [number, number] = [1, 1]
+  private streamline = 0
 
   // Preview cadence / decimation
   private previewCfg: { decimatePx: number; minMs: number } = { decimatePx: 0, minMs: 8 }
@@ -29,11 +36,17 @@ export class SimpleRopeTool {
         opacity?: number
         blendMode?: string
         preview?: { decimatePx?: number; minMs?: number }
+        pressureSensitivity?: boolean
+        thinning?: any
+        jitter?: any
+        streamline?: number
       }
       if (typeof s.strokeSize === 'number') this.widthBase = Math.max(1, s.strokeSize)
       if (typeof s.strokeColor === 'number') this.strokeColor = s.strokeColor >>> 0
       if (typeof s.opacity === 'number') this.opacity = Math.max(0.01, Math.min(1, s.opacity))
       if (typeof s.blendMode === 'string') this.blendMode = s.blendMode as any
+      if (typeof s.pressureSensitivity === 'boolean') this.pressureSensitivity = s.pressureSensitivity
+      if (typeof s.streamline === 'number') this.streamline = Math.max(0, Math.min(1, s.streamline))
       if (s.preview) {
         this.previewCfg = {
           decimatePx: Math.max(0, s.preview.decimatePx ?? this.previewCfg.decimatePx),
@@ -88,7 +101,7 @@ export class SimpleRopeTool {
     let last = this.points[this.points.length - 1]
     for (const s of samples) {
       if (!last) {
-        const p = { x: s.x, y: s.y }
+        const p = { x: s.x, y: s.y, pressure: this.pressureSensitivity ? (s.pressure ?? 1) : 1, time: s.time }
         this.points.push(p)
         last = p
         continue
@@ -96,7 +109,7 @@ export class SimpleRopeTool {
       const dx = s.x - last.x
       const dy = s.y - last.y
       if (Math.hypot(dx, dy) >= minDist) {
-        const p = { x: s.x, y: s.y }
+        const p = { x: s.x, y: s.y, pressure: this.pressureSensitivity ? (s.pressure ?? 1) : 1, time: s.time }
         this.points.push(p)
         last = p
       }
@@ -151,14 +164,14 @@ export class SimpleRopeTool {
   private _params(): StrokeBuilderParams {
     return {
       baseWidth: this.widthBase,
-      pressureSensitivity: false,
-      pressureMode: 'width',
-      pressureCurve: 'linear',
-      widthScaleRange: [1, 1],
-      opacityRange: [1, 1],
+      pressureSensitivity: this.pressureSensitivity,
+      pressureMode: this.pressureMode,
+      pressureCurve: this.pressureCurve,
+      widthScaleRange: this.widthScaleRange,
+      opacityRange: this.opacityRange,
       thinning: undefined,
       jitter: undefined,
-      streamline: 0,
+      streamline: this.streamline,
     }
   }
 

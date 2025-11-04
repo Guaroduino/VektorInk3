@@ -279,9 +279,10 @@ function buildOffsets(points: StrokePoint[], halfWidthPx: Float32Array): { left:
     // Miter scale to preserve constant distance from centerline
     // a = w / dot(m, n1)  => scale = 1 / dot(m, n1)
     const dotMN1 = mx * n1x + my * n1y
-    let scale = 1 / Math.max(1e-3, Math.abs(dotMN1))
-    // Clamp extreme miters to avoid spikes at very sharp angles
-    scale = Math.min(scale, 4.0)
+  let scale = 1 / Math.max(1e-3, Math.abs(dotMN1))
+  // Clamp extreme miters to avoid spikes at very sharp angles
+  // Lower limit reduces corner triangles/spikes on tight turns
+  scale = Math.min(scale, 2.0)
     const w = halfWidthPx[i] * scale
 
     left[i * 2 + 0] = p.x + mx * w
