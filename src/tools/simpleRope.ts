@@ -7,6 +7,7 @@ export class SimpleRopeTool {
   private previewMesh: Mesh | null = null
   private points: { x: number; y: number; pressure: number }[] = []
   private externalPreview = false
+  private exactPreview = true
 
   // Style
   private widthBase = 8
@@ -33,6 +34,7 @@ export class SimpleRopeTool {
         preview?: { decimatePx?: number; minMs?: number }
         pressureSensitivity?: boolean
         widthScaleRange?: [number, number]
+        previewExact?: boolean
       }
       if (typeof s.strokeSize === 'number') this.widthBase = Math.max(1, s.strokeSize)
       if (typeof s.strokeColor === 'number') this.strokeColor = s.strokeColor >>> 0
@@ -46,6 +48,7 @@ export class SimpleRopeTool {
           minMs: Math.max(0, s.preview.minMs ?? this.previewCfg.minMs),
         }
       }
+      if (typeof (s as any).previewExact === 'boolean') this.exactPreview = !!(s as any).previewExact
       // live-apply to current preview
       if (this.previewMesh) {
         ;(this.previewMesh as any).tint = this.strokeColor
@@ -199,4 +202,7 @@ export class SimpleRopeTool {
       try { this.previewMesh.visible = false } catch {}
     }
   }
+
+  setExactPreviewEnabled(on: boolean) { this.exactPreview = !!on }
+  getExactPreviewEnabled() { return !!this.exactPreview }
 }

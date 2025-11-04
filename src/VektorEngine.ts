@@ -266,17 +266,23 @@ export class VektorEngine {
 
   // Handler de muestras separado para poder reusar al reconfigurar input
   private _onSamples(_id: number, samples: InputSample[], phase: PointerPhase) {
-      // Enviar a worker de previsualización (coordenadas en espacio de canvas) si está habilitado
+      // Enviar a worker de previsualización (coordenadas en espacio de canvas) si está habilitado,
+      // excepto cuando la herramienta es 'rope' y requiere preview fiel (exacto).
       if (this.previewEnabled && this.previewWorker && !this.panMode && !this.isPanningDrag) {
-        try {
-          const msg: any = {
-            type: 'samples',
-            phase,
-            samples: samples.map((s) => ({ x: s.x, y: s.y, pressure: this.pressureSensitivity ? (s.pressure ?? 1) : 1, predicted: (s as any).predicted ? true : false })),
-            style: { color: this.strokeColor >>> 0, opacity: this.opacity, width: this.strokeSize, pressure: !!this.pressureSensitivity },
-          }
-          this.previewWorker.postMessage(msg)
-        } catch {}
+        const isRope = this.activeToolKey === 'rope'
+        let ropeExact = false
+        try { ropeExact = isRope ? !!(this.tools as any)?.rope?.getExactPreviewEnabled?.() : false } catch {}
+        if (!(isRope && ropeExact)) {
+          try {
+            const msg: any = {
+              type: 'samples',
+              phase,
+              samples: samples.map((s) => ({ x: s.x, y: s.y, pressure: this.pressureSensitivity ? (s.pressure ?? 1) : 1, predicted: (s as any).predicted ? true : false })),
+              style: { color: this.strokeColor >>> 0, opacity: this.opacity, width: this.strokeSize, pressure: !!this.pressureSensitivity },
+            }
+            this.previewWorker.postMessage(msg)
+          } catch {}
+        }
       }
       // Modo pan: usar drag para desplazar world
       if (this.panMode || this.isPanningDrag) {
@@ -313,10 +319,13 @@ export class VektorEngine {
       switch (phase) {
         case 'start':
           this.drawing = true
-          // Si usamos preview offscreen, notificar a la herramienta para que no pinte su propio preview
-          // EXCEPTO para 'rope', donde queremos previsualización idéntica al trazo final (mismo strip de geometría)
+          // Si usamos preview offscreen, notificar a la herramienta para que no pinte su propio preview.
+          // Para 'rope' con preview fiel, usar preview interno (idéntico al final).
           try {
-            const useExternal = this.previewEnabled && this.activeToolKey !== 'rope'
+            const isRope = this.activeToolKey === 'rope'
+            let ropeExact = false
+            try { ropeExact = isRope ? !!(this.tools as any)?.rope?.getExactPreviewEnabled?.() : false } catch {}
+            const useExternal = this.previewEnabled && (!isRope || !ropeExact)
             this.tools[this.activeToolKey]?.setExternalPreviewEnabled?.(useExternal)
           } catch {}
           tool.start(layer)
@@ -623,6 +632,7 @@ export class VektorEngine {
     this.opacity = Math.max(0.01, Math.min(1, alpha))
     this.applyStyleToTools()
     this._scheduleAutosave()
+    try { (this.tools as any)?.rope?.setExactPreviewEnabled?.(this.opacity < 1) } catch {}
   }
   getOpacity() { return this.opacity }
 
@@ -700,6 +710,10 @@ export class VektorEngine {
     this._scheduleAutosave()
   }
   getBackgroundColor() { return this.backgroundColor }
+
+  // --- Rope exact preview API ---
+  setRopeExactPreview(on: boolean) { try { (this.tools as any)?.rope?.setExactPreviewEnabled?.(!!on) } catch {} }
+  getRopeExactPreview() { try { return !!(this.tools as any)?.rope?.getExactPreviewEnabled?.() } catch { return false } }
 
   // --- History API ---
   private _emitHistoryChange() { for (const fn of this.historyListeners) { try { fn() } catch {} } }

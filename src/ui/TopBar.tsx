@@ -36,6 +36,7 @@ export const TopBar: React.FC = () => {
   const [blend, setBlend] = useState(() => engine.getBlendMode?.() ?? 'normal')
   const [opacity, setOpacity] = useState(() => engine.getOpacity?.() ?? 1)
   const [pressure, setPressure] = useState(() => engine.getPressureSensitivity?.() ?? true)
+  const [ropeExact, setRopeExact] = useState(() => (engine as any).getRopeExactPreview?.() ?? true)
 
   // Global state
   const [bgHex, setBgHex] = useState(() => `#${(engine.getBackgroundColor?.() ?? 0x111111).toString(16).padStart(6,'0')}`)
@@ -91,6 +92,7 @@ export const TopBar: React.FC = () => {
   const onBlendChange = (v:string) => { setBlend(v); engine.setBlendMode?.(v) }
   const onOpacity = (v:number) => { setOpacity(v); engine.setOpacity?.(v) }
   const onPressure = (on:boolean) => { setPressure(on); engine.setPressureSensitivity?.(on) }
+  const onRopeExact = (on:boolean) => { setRopeExact(on); (engine as any).setRopeExactPreview?.(on) }
 
   // Handlers global
   const onBg = (hex:string) => { setBgHex(hex); const n=parseInt(hex.replace('#',''),16)>>>0; engine.setBackgroundColor?.(n) }
@@ -322,6 +324,10 @@ export const TopBar: React.FC = () => {
             <div className="flex items-center gap-2" title="Presión (tablet)">
               <input type="checkbox" checked={pressure} onChange={e=>onPressure(e.target.checked)} />
               <MousePointer2 size={16} className="opacity-80" />
+            </div>
+            <div className="flex items-center gap-2" title="Preview exacto (igual al trazo final)">
+              <input type="checkbox" checked={ropeExact} onChange={e=>onRopeExact(e.target.checked)} />
+              <span className="text-sm">Preview exacto</span>
             </div>
           </div>
         </div>
