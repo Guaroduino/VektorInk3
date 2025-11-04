@@ -66,7 +66,9 @@ export function createInputCapture(
   }
 
   const emitCoalesced = (e: PointerEvent, phase: PointerPhase) => {
-    const evs = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [e]
+    let evs = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [e]
+    // Some browsers return an empty array for non-move phases; always include the base event
+    if (!evs || evs.length === 0) evs = [e]
     const samples = evs.map((ev) => mapSample(ev as PointerEvent))
     // Predicción básica: usa los dos últimos eventos coalescidos para estimar velocidad
     const predMs = Math.max(0, options.predictionMs ?? 0)
@@ -87,16 +89,16 @@ export function createInputCapture(
   const onDown = (e: PointerEvent) => {
     if (e.button !== 0 && e.pointerType !== 'pen' && e.pointerType !== 'touch') return
     activePointers.add(e.pointerId)
-    if (element && 'setPointerCapture' in element && e.target && (e.target as Element).hasPointerCapture === undefined) {
-      // Preferimos capturar sobre el elemento objetivo si aplica
-      try {
-        (e.target as Element).setPointerCapture?.(e.pointerId)
-      } catch {}
+    // Capturar el puntero en el canvas para no perder los eventos aunque el dedo salga del área
+    if (element && typeof (element as any).setPointerCapture === 'function') {
+      try { (element as any).setPointerCapture(e.pointerId) } catch {}
     }
     emitCoalesced(e, 'start')
   }
 
   const onMove = (e: PointerEvent) => {
+    // If using rawupdate, ignore pointermove for non-touch to avoid double-processing.
+    if (options.usePointerRawUpdate && e.pointerType !== 'touch') return
     if (!activePointers.has(e.pointerId)) return
     emitCoalesced(e, 'move')
   }
@@ -124,20 +126,33 @@ export function createInputCapture(
   const cancel = (e: Event) => onUpOrCancel(e as PointerEvent, 'cancel')
 
   targetAdd('pointerdown', down)
+  // Attach both; rawupdate handles non-touch when enabled, pointermove handles touch and fallback
   if (options.usePointerRawUpdate) targetAdd('pointerrawupdate', raw)
-  else targetAdd('pointermove', move)
+  targetAdd('pointermove', move)
   targetAdd('pointerup', up)
   targetAdd('pointercancel', cancel)
   targetAdd('lostpointercapture', cancel)
+  // Fallback global listeners to ensure we never miss the final up/cancel
+  const win = typeof window !== 'undefined' ? window : undefined as any
+  const winUp = (e: Event) => onUpOrCancel(e as PointerEvent, 'end')
+  const winCancel = (e: Event) => onUpOrCancel(e as PointerEvent, 'cancel')
+  if (win) {
+    win.addEventListener('pointerup', winUp, { passive: true })
+    win.addEventListener('pointercancel', winCancel, { passive: true })
+  }
 
   return {
     dispose() {
       targetRemove('pointerdown', down)
-      if (options.usePointerRawUpdate) targetRemove('pointerrawupdate', raw)
-      else targetRemove('pointermove', move)
+        if (options.usePointerRawUpdate) targetRemove('pointerrawupdate', raw)
+        targetRemove('pointermove', move)
       targetRemove('pointerup', up)
       targetRemove('pointercancel', cancel)
       targetRemove('lostpointercapture', cancel)
+        if (win) {
+          win.removeEventListener('pointerup', winUp)
+          win.removeEventListener('pointercancel', winCancel)
+        }
       activePointers.clear()
     },
   }

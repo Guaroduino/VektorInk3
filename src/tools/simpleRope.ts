@@ -5,17 +5,14 @@ import { buildStrokeStrip, type StrokeBuilderParams } from '../geom/strokeBuilde
 export class SimpleRopeTool {
   private container: Container | null = null
   private previewMesh: Mesh | null = null
-  private points: { x: number; y: number; pressure: number }[] = []
+  private points: { x: number; y: number }[] = []
   private externalPreview = false
-  private exactPreview = true
 
   // Style
   private widthBase = 8
   private strokeColor = 0xffffff
   private opacity = 1.0
   private blendMode: any = 'normal'
-  private pressureSensitivity: boolean = true
-  private widthScaleRange: [number, number] = [0, 1]
 
   // Preview cadence / decimation
   private previewCfg: { decimatePx: number; minMs: number } = { decimatePx: 0, minMs: 8 }
@@ -32,23 +29,17 @@ export class SimpleRopeTool {
         opacity?: number
         blendMode?: string
         preview?: { decimatePx?: number; minMs?: number }
-        pressureSensitivity?: boolean
-        widthScaleRange?: [number, number]
-        previewExact?: boolean
       }
       if (typeof s.strokeSize === 'number') this.widthBase = Math.max(1, s.strokeSize)
       if (typeof s.strokeColor === 'number') this.strokeColor = s.strokeColor >>> 0
       if (typeof s.opacity === 'number') this.opacity = Math.max(0.01, Math.min(1, s.opacity))
       if (typeof s.blendMode === 'string') this.blendMode = s.blendMode as any
-      if (typeof s.pressureSensitivity === 'boolean') this.pressureSensitivity = s.pressureSensitivity
-      if (s.widthScaleRange && Array.isArray(s.widthScaleRange)) this.widthScaleRange = s.widthScaleRange
       if (s.preview) {
         this.previewCfg = {
           decimatePx: Math.max(0, s.preview.decimatePx ?? this.previewCfg.decimatePx),
           minMs: Math.max(0, s.preview.minMs ?? this.previewCfg.minMs),
         }
       }
-      if (typeof (s as any).previewExact === 'boolean') this.exactPreview = !!(s as any).previewExact
       // live-apply to current preview
       if (this.previewMesh) {
         ;(this.previewMesh as any).tint = this.strokeColor
@@ -88,8 +79,7 @@ export class SimpleRopeTool {
         const dx = s.x - prev.x
         const dy = s.y - prev.y
         this._accumDist += Math.hypot(dx, dy)
-        const pres = this.pressureSensitivity ? Math.max(0, Math.min(1, s.pressure ?? 1)) : 1
-        prev = { x: s.x, y: s.y, pressure: pres }
+        prev = { x: s.x, y: s.y }
       }
     }
 
@@ -97,9 +87,8 @@ export class SimpleRopeTool {
     const minDist = Math.max(0, this.previewCfg.decimatePx)
     let last = this.points[this.points.length - 1]
     for (const s of samples) {
-      const pres = this.pressureSensitivity ? Math.max(0, Math.min(1, s.pressure ?? 1)) : 1
       if (!last) {
-        const p = { x: s.x, y: s.y, pressure: pres }
+        const p = { x: s.x, y: s.y }
         this.points.push(p)
         last = p
         continue
@@ -107,7 +96,7 @@ export class SimpleRopeTool {
       const dx = s.x - last.x
       const dy = s.y - last.y
       if (Math.hypot(dx, dy) >= minDist) {
-        const p = { x: s.x, y: s.y, pressure: pres }
+        const p = { x: s.x, y: s.y }
         this.points.push(p)
         last = p
       }
@@ -162,10 +151,10 @@ export class SimpleRopeTool {
   private _params(): StrokeBuilderParams {
     return {
       baseWidth: this.widthBase,
-      pressureSensitivity: this.pressureSensitivity,
+      pressureSensitivity: false,
       pressureMode: 'width',
       pressureCurve: 'linear',
-      widthScaleRange: this.widthScaleRange,
+      widthScaleRange: [1, 1],
       opacityRange: [1, 1],
       thinning: undefined,
       jitter: undefined,
@@ -202,7 +191,4 @@ export class SimpleRopeTool {
       try { this.previewMesh.visible = false } catch {}
     }
   }
-
-  setExactPreviewEnabled(on: boolean) { this.exactPreview = !!on }
-  getExactPreviewEnabled() { return !!this.exactPreview }
 }
