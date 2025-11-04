@@ -1,9 +1,5 @@
-/*
-  Reseteo de Tailwind (esto ya debería estar)
-*/
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* Cargar Tailwind v4 */
+@import "tailwindcss";
 
 /*
   Reglas Globales para Vektor

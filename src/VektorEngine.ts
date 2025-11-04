@@ -24,7 +24,7 @@ export class VektorEngine {
   private mountEl: HTMLElement | null = null
 
   private tools: Record<ToolKey, any>
-  private activeToolKey: ToolKey = 'vpen'
+  private activeToolKey: ToolKey = 'rope'
   private drawing = false
   private panMode = false
   private isPanningDrag = false

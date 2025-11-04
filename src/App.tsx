@@ -1,7 +1,8 @@
 import React from 'react'
 import { EngineProvider } from './ui/EngineContext'
 import { CanvasContainer } from './ui/CanvasContainer'
-import { Toolbar } from './ui/Toolbar'
+import { ToolPanel } from './ui/ToolPanel'
+import { GlobalPanel } from './ui/GlobalPanel'
 
 function App() {
   return (
@@ -11,8 +12,11 @@ function App() {
         {/* Capa 1: Canvas a pantalla completa */}
         <CanvasContainer />
 
-        {/* Capa 2: UI flotante */}
-        <Toolbar />
+  {/* Panel izquierdo: herramienta y opciones locales */}
+  <ToolPanel />
+
+  {/* Panel derecho: ajustes globales */}
+  <GlobalPanel />
 
         {/* Futuro: Panel de capas */}
         {/* <LayerPanel /> */}
