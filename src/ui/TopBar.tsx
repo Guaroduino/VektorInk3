@@ -46,7 +46,6 @@ export const TopBar: React.FC = () => {
   const [previewQ, setPreviewQ] = useState(() => engine.getPreviewQuality?.() ?? 1)
   const [renderScale, setRenderScale] = useState(() => (engine as any).getRendererResolution?.() ?? 1)
   const [lowLatency, setLowLatency] = useState(() => (engine as any).getLowLatencyMode?.() ?? false)
-  const [stylusOnly, setStylusOnly] = useState<boolean>(() => (engine as any).getStylusOnly?.() ?? false)
 
   // Outside click to close popovers
   useEffect(() => {
@@ -106,7 +105,6 @@ export const TopBar: React.FC = () => {
   const onScale = (v:number) => { setRenderScale(v); (engine as any).setRendererResolution?.(v) }
   const onLowLat = (on:boolean) => { setLowLatency(on); (engine as any).setLowLatencyMode?.(on) }
   const onAutosaveToggle = (on: boolean) => { setAutosaveEnabled(on); (engine as any).setAutosaveEnabled?.(on) }
-  const onStylusOnly = (on: boolean) => { setStylusOnly(on); (engine as any).setStylusOnly?.(on) }
   const onRestoreAutosave = () => {
     const ok = (engine as any).restoreAutosave?.()
     // Refresh some local UI states that may have changed
@@ -351,29 +349,21 @@ export const TopBar: React.FC = () => {
           <div className="grid gap-2">
             <div className="flex items-center gap-2" title="Color de fondo">
               <Droplet size={16} className="opacity-80" />
-              <span className="text-xs text-gray-700">Fondo</span>
               <input type="color" value={bgHex} onChange={e=>onBg(e.target.value)} className="h-7 w-7 rounded-md border border-gray-300 bg-transparent p-0" />
             </div>
             <div className="flex items-center gap-2" title="Preview Quality">
               <SlidersVertical size={16} className="opacity-80" />
-              <span className="text-xs text-gray-700">Preview</span>
               <input type="range" min={0} max={1} step={0.01} value={previewQ} onChange={e=>onPreview(Number(e.target.value))} className="w-52 accent-blue-500" />
             </div>
             <div className="flex items-center gap-2">
               <div className="flex items-center gap-2" title="Render Scale">
                 <Maximize2 size={16} className="opacity-80" />
-                <span className="text-xs text-gray-700">Escala</span>
                 <input type="range" min={0.5} max={2} step={0.1} value={renderScale} onChange={e=>onScale(Number(e.target.value))} className="w-40 accent-blue-500" />
               </div>
               <div className="ml-auto flex items-center gap-2" title="Low latency">
                 <input type="checkbox" checked={lowLatency} onChange={e=>onLowLat(e.target.checked)} />
-                <span className="text-xs text-gray-700">Latencia</span>
                 <Zap size={14} className="opacity-80" />
               </div>
-            </div>
-            <div className="flex items-center gap-2" title="Solo Stylus (rechazo de palma)">
-              <input type="checkbox" checked={stylusOnly} onChange={e=>onStylusOnly(e.target.checked)} />
-              <span className="text-xs text-gray-700">Solo Stylus</span>
             </div>
             <div className="flex items-center gap-2" title="Autosave">
               <input type="checkbox" checked={autosaveEnabled} onChange={e=>onAutosaveToggle(e.target.checked)} />

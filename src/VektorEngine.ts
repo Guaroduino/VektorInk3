@@ -83,8 +83,6 @@ export class VektorEngine {
   private debugOverlayEnabled: boolean = false
   private debugGfx: Graphics | null = null
   private debugText: Text | null = null
-  // Stylus-only drawing toggle (palm rejection): when true, only pen events can draw
-  private stylusOnly: boolean = false
 
   // --- Project I/O ---
   private projectVersion = 1
@@ -282,10 +280,6 @@ export class VektorEngine {
   private _onSamples(id: number, samples: InputSample[], phase: PointerPhase, _rawEvent?: PointerEvent) {
       // Update active pointer map for multi-touch gestures
       const last = samples[samples.length - 1]
-      // Palm rejection: when stylus-only is enabled and a pen stroke is active, ignore touch pointers completely
-      if (this.stylusOnly && this.drawing && last && last.pointerType === 'touch') {
-        return
-      }
       if (last && last.pointerType === 'touch') {
         if (phase === 'start' || phase === 'move') {
           this.pointerPositions.set(id, { x: last.x, y: last.y, pointerType: last.pointerType })
@@ -404,13 +398,6 @@ export class VektorEngine {
         } else if (phase === 'end' || phase === 'cancel') {
           this.isPanningDrag = false
         }
-        return
-      }
-
-      // Stylus-only drawing: ignore non-pen drawing events, but keep touch for gestures and pan
-      const lastSample = samples[samples.length - 1]
-      if (this.stylusOnly && lastSample && lastSample.pointerType !== 'pen') {
-        // Do not proceed to drawing logic; pan and gesture already handled above
         return
       }
 
@@ -863,14 +850,6 @@ export class VektorEngine {
   }
   getPressureSensitivity() { return this.pressureSensitivity }
 
-  // --- Stylus-only (palm rejection) API ---
-  setStylusOnly(on: boolean) {
-    this.stylusOnly = !!on
-    // Persist preference
-    try { localStorage.setItem('vi.input.stylusOnly', this.stylusOnly ? '1' : '0') } catch {}
-  }
-  getStylusOnly() { return this.stylusOnly }
-
   // --- Debug input overlay toggle ---
   setDebugInputOverlay(on: boolean) {
     this.debugOverlayEnabled = !!on
@@ -1099,7 +1078,6 @@ export class VektorEngine {
         style: { strokeColor: this.strokeColor >>> 0, strokeSize: this.strokeSize, opacity: this.opacity, blendMode: this.blendMode },
         previewQuality: this.previewQuality,
         lowLatency: this.lowLatency,
-        stylusOnly: this.stylusOnly,
         rendererResolution: this.getRendererResolution(),
         freehand: { ...this.freehand },
         jitter: { ...this.jitter },
@@ -1130,7 +1108,6 @@ export class VektorEngine {
         }
         if (typeof s.previewQuality === 'number') this.setPreviewQuality(s.previewQuality)
         if (typeof s.lowLatency === 'boolean') this.setLowLatencyMode(s.lowLatency)
-        if (typeof s.stylusOnly === 'boolean') this.setStylusOnly(s.stylusOnly)
         if (typeof s.rendererResolution === 'number') this.setRendererResolution(s.rendererResolution)
         if (s.freehand) this.setFreehandParams(s.freehand)
         if (s.jitter) this.setJitterParams(s.jitter)
@@ -1204,11 +1181,6 @@ export class VektorEngine {
       // Read persisted toggle
       const en = localStorage.getItem('vi.autosave.enabled')
       if (en != null) this.autosaveEnabled = en === '1'
-      // Also restore stylusOnly immediate preference if present
-      try {
-        const st = localStorage.getItem('vi.input.stylusOnly')
-        if (st != null) this.stylusOnly = st === '1'
-      } catch {}
       const json = localStorage.getItem('vi.autosave')
       if (!json) return
       const data = JSON.parse(json)
