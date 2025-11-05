@@ -37,9 +37,6 @@ export function createInputCapture(
   onSamples: SamplesCallback,
   options: InputOptions = {}
 ) {
-  const supportsRawUpdate = ((): boolean => {
-    try { return typeof window !== 'undefined' && ('onpointerrawupdate' in window) } catch { return false }
-  })()
   const rel = options.relativeToTarget ?? true
   const element: HTMLElement | null = target instanceof Window ? null : (target as HTMLElement)
   const activePointers = new Set<number>()
@@ -100,10 +97,8 @@ export function createInputCapture(
   }
 
   const onMove = (e: PointerEvent) => {
-    // When rawupdate is enabled, process pointerrawupdate for mouse/pen and ignore pointermove to avoid duplicates.
-    // Still process pointermove for touch (no rawupdate for touch on most browsers).
-    const type = (e as any).type
-    if (options.usePointerRawUpdate && supportsRawUpdate && e.pointerType !== 'touch' && type === 'pointermove') return
+    // If using rawupdate, ignore pointermove for non-touch to avoid double-processing.
+    if (options.usePointerRawUpdate && e.pointerType !== 'touch') return
     if (!activePointers.has(e.pointerId)) return
     emitCoalesced(e, 'move')
   }
@@ -132,7 +127,7 @@ export function createInputCapture(
 
   targetAdd('pointerdown', down)
   // Attach both; rawupdate handles non-touch when enabled, pointermove handles touch and fallback
-  if (options.usePointerRawUpdate && supportsRawUpdate) targetAdd('pointerrawupdate', raw)
+  if (options.usePointerRawUpdate) targetAdd('pointerrawupdate', raw)
   targetAdd('pointermove', move)
   targetAdd('pointerup', up)
   targetAdd('pointercancel', cancel)
