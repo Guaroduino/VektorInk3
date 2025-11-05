@@ -252,42 +252,18 @@ function buildOffsets(points: StrokePoint[], halfWidthPx: Float32Array): { left:
   const right = new Float32Array(n * 2)
   for (let i = 0; i < n; i++) {
     const p = points[i]
-    const pPrev = points[Math.max(0, i - 1)]
-    const pNext = points[Math.min(n - 1, i + 1)]
-    // Segment unit tangents
-    let t0x = p.x - pPrev.x
-    let t0y = p.y - pPrev.y
-    let t1x = pNext.x - p.x
-    let t1y = pNext.y - p.y
-    const l0 = Math.hypot(t0x, t0y)
-    const l1 = Math.hypot(t1x, t1y)
-    if (l0 > 1e-6) { t0x /= l0; t0y /= l0 } else { t0x = t1x; t0y = t1y }
-    if (l1 > 1e-6) { t1x /= l1; t1y /= l1 } else { t1x = t0x; t1y = t0y }
-
-    // Corresponding unit normals
-    const n0x = -t0y, n0y = t0x
-    const n1x = -t1y, n1y = t1x
-
-    // Miter direction = normalized sum of adjacent normals
-    let mx = n0x + n1x
-    let my = n0y + n1y
-    let ml = Math.hypot(mx, my)
-    // If normals are opposite (180° turn), fall back to current segment's normal
-    if (ml < 1e-6) { mx = n1x; my = n1y; ml = 1 }
-    mx /= ml; my /= ml
-
-    // Miter scale to preserve constant distance from centerline
-    // a = w / dot(m, n1)  => scale = 1 / dot(m, n1)
-    const dotMN1 = mx * n1x + my * n1y
-    let scale = 1 / Math.max(1e-3, Math.abs(dotMN1))
-    // Clamp extreme miters to avoid spikes at very sharp angles
-    scale = Math.min(scale, 4.0)
-    const w = halfWidthPx[i] * scale
-
-    left[i * 2 + 0] = p.x + mx * w
-    left[i * 2 + 1] = p.y + my * w
-    right[i * 2 + 0] = p.x - mx * w
-    right[i * 2 + 1] = p.y - my * w
+    const p0 = points[Math.max(0, i - 1)]
+    const p1 = points[Math.min(n - 1, i + 1)]
+    const dx = p1.x - p0.x
+    const dy = p1.y - p0.y
+    const len = Math.hypot(dx, dy) || 1
+    const nx = -dy / len
+    const ny = dx / len
+    const w = halfWidthPx[i]
+    left[i * 2 + 0] = p.x + nx * w
+    left[i * 2 + 1] = p.y + ny * w
+    right[i * 2 + 0] = p.x - nx * w
+    right[i * 2 + 1] = p.y - ny * w
   }
   return { left, right }
 }
