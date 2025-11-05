@@ -1,12 +1,11 @@
-import React, { useEffect, useState } from 'react'
+import React, { useState } from 'react'
 import { useEngine } from './EngineContext'
-import { Activity, PanelLeftClose, PanelLeftOpen, Settings2, SlidersVertical, Palette, Droplet, Zap } from 'lucide-react'
+import { PanelLeftClose, PanelLeftOpen, Settings2, SlidersVertical, Palette, Droplet, Zap } from 'lucide-react'
 
 export const MiniToolbar: React.FC = () => {
   const engine = useEngine()
   const [collapsed, setCollapsed] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(true)
-  const [activeIsRope, setActiveIsRope] = useState(() => engine.getActiveTool?.() === 'rope')
 
   // Globals
   const [size, setSize] = useState(() => engine.getStrokeSize?.() ?? 8)
@@ -18,18 +17,7 @@ export const MiniToolbar: React.FC = () => {
   const [renderScale, setRenderScale] = useState(() => (engine as any).getRendererResolution?.() ?? 1)
   const [lowLatency, setLowLatency] = useState(() => (engine as any).getLowLatencyMode?.() ?? false)
 
-  // Ensure Rope is the starting tool in UI
-  useEffect(() => {
-    try {
-      engine.setActiveTool?.('rope')
-      setActiveIsRope(true)
-    } catch {}
-  }, [])
-
-  const pickRope = () => {
-    engine.setActiveTool?.('rope')
-    setActiveIsRope(true)
-  }
+  // Default tool is managed by the engine; no explicit selection here.
 
   // Handlers
   const onSizeChange = (v: number) => { setSize(v); engine.setStrokeSize?.(v) }
@@ -44,7 +32,7 @@ export const MiniToolbar: React.FC = () => {
       className="absolute top-4 left-4 z-[9999] pointer-events-auto bg-white text-gray-900 border border-gray-300 rounded-lg shadow-md p-2"
       style={{ position: 'absolute', top: 16, left: 16, zIndex: 9999 }}
     >
-      {/* Top row: collapse, rope tool, settings toggle */}
+    {/* Top row: collapse and settings toggle */}
   <div className="flex items-center gap-2">
         <button
           aria-label={collapsed ? 'Expandir' : 'Contraer'}
@@ -53,15 +41,6 @@ export const MiniToolbar: React.FC = () => {
           className="p-2 rounded-md text-gray-700 hover:text-gray-900 hover:bg-gray-100 border border-gray-300"
         >
           {collapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
-        </button>
-
-        <button
-          onClick={pickRope}
-          data-active={activeIsRope}
-          title="SimpleRope"
-          className="p-2 rounded-md text-gray-700 hover:text-gray-900 hover:bg-gray-100 data-[active=true]:bg-blue-600 data-[active=true]:text-white border border-gray-300"
-        >
-          <Activity size={18} />
         </button>
 
         <button

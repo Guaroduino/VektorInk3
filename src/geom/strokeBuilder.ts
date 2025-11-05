@@ -53,6 +53,13 @@ export interface StrokeBuilderParams {
   jitter?: JitterConfig
   // Streamline: input point smoothing (0..1). 0 = raw, 1 = heavily smoothed.
   streamline?: number
+  // Join style at sharp corners
+  join?: 'miter' | 'bevel' | 'round'
+  // Max allowed miter scale; above this threshold we can fallback to bevel
+  miterLimit?: number
+  // End caps
+  capStart?: 'butt' | 'square' | 'round'
+  capEnd?: 'butt' | 'square' | 'round'
 }
 
 export interface StripGeometry {
@@ -246,10 +253,12 @@ function computeWidthAndOpacityFactors(
   return { widthFactor, opacityFactor }
 }
 
-function buildOffsets(points: StrokePoint[], halfWidthPx: Float32Array): { left: Float32Array; right: Float32Array } {
+function buildOffsets(points: StrokePoint[], halfWidthPx: Float32Array, params: StrokeBuilderParams): { left: Float32Array; right: Float32Array } {
   const n = points.length
   const left = new Float32Array(n * 2)
   const right = new Float32Array(n * 2)
+  const joinStyle = params.join ?? 'miter'
+  const mLimit = Math.max(1, params.miterLimit ?? 2.0)
   for (let i = 0; i < n; i++) {
     const p = points[i]
     const pPrev = points[Math.max(0, i - 1)]
@@ -279,10 +288,17 @@ function buildOffsets(points: StrokePoint[], halfWidthPx: Float32Array): { left:
     // Miter scale to preserve constant distance from centerline
     // a = w / dot(m, n1)  => scale = 1 / dot(m, n1)
     const dotMN1 = mx * n1x + my * n1y
-  let scale = 1 / Math.max(1e-3, Math.abs(dotMN1))
-  // Clamp extreme miters to avoid spikes at very sharp angles
-  // Lower limit reduces corner triangles/spikes on tight turns
-  scale = Math.min(scale, 2.0)
+    let scale = 1 / Math.max(1e-3, Math.abs(dotMN1))
+    // Fallback to bevel when the miter would be too large
+    if (joinStyle === 'bevel' && scale > mLimit) {
+      // Use the next-segment normal directly (flat bevel)
+      mx = n1x
+      my = n1y
+      scale = 1
+    } else {
+      // Clamp extreme miters to avoid spikes at very sharp angles
+      scale = Math.min(scale, mLimit)
+    }
     const w = halfWidthPx[i] * scale
 
     left[i * 2 + 0] = p.x + mx * w
@@ -403,10 +419,197 @@ export function buildStrokeStrip(points: StrokePoint[], params: StrokeBuilderPar
   }
 
   // Build outlines
-  const { left, right } = buildOffsets(pts, half)
+  const { left, right } = buildOffsets(pts, half, params)
+
+  // Optionally add round joins by inserting arc samples at sharp corners (outside side only)
+  let L = left, R = right
+  if ((params.join ?? 'miter') === 'round' && n >= 3) {
+    const lDyn: number[] = []
+    const rDyn: number[] = []
+    const angle = (x:number,y:number)=>Math.atan2(y,x)
+    const normalizeDelta = (d:number, sign:number) => {
+      // Normalize to (-PI, PI]
+      while (d <= -Math.PI) d += 2*Math.PI
+      while (d > Math.PI) d -= 2*Math.PI
+      // Ensure sweep direction matches turn sign (positive for left, negative for right)
+      if (sign > 0 && d < 0) d += 2*Math.PI
+      if (sign < 0 && d > 0) d -= 2*Math.PI
+      return d
+    }
+    for (let i = 0; i < n; i++) {
+      if (i > 0 && i < n - 1) {
+        const pPrev = pts[i - 1]
+        const p = pts[i]
+        const pNext = pts[i + 1]
+        let t0x = p.x - pPrev.x, t0y = p.y - pPrev.y
+        let t1x = pNext.x - p.x, t1y = pNext.y - p.y
+        const l0 = Math.hypot(t0x, t0y)
+        const l1 = Math.hypot(t1x, t1y)
+        if (l0 > 1e-6) { t0x /= l0; t0y /= l0 } else { t0x = t1x; t0y = t1y }
+        if (l1 > 1e-6) { t1x /= l1; t1y /= l1 } else { t1x = t0x; t1y = t0y }
+        const cross = t0x * t1y - t0y * t1x // >0 left turn, <0 right turn
+        // Skip tiny turns
+        const dot = t0x * t1x + t0y * t1y
+        const turnAngle = Math.acos(clamp(dot, -1, 1))
+        if (Math.abs(cross) > 1e-6 && turnAngle > 0.12) {
+          // Outside normal basis
+          const n0x = -t0y, n0y = t0x
+          const n1x = -t1y, n1y = t1x
+          const out0x = cross > 0 ? n0x : -n0x
+          const out0y = cross > 0 ? n0y : -n0y
+          const out1x = cross > 0 ? n1x : -n1x
+          const out1y = cross > 0 ? n1y : -n1y
+          let a0 = angle(out0x, out0y)
+          let a1 = angle(out1x, out1y)
+          const d = normalizeDelta(a1 - a0, cross > 0 ? 1 : -1)
+          // Segment count proportional to angle (pi/8 ~ 22.5° per segment)
+          const k = Math.min(12, Math.max(2, Math.ceil(Math.abs(d) / (Math.PI / 8))))
+          const radius = half[i]
+          // Baseline inside pair at this index
+          const baseLx = L[i * 2 + 0], baseLy = L[i * 2 + 1]
+          const baseRx = R[i * 2 + 0], baseRy = R[i * 2 + 1]
+          const insideIsRight = cross > 0 // left turn => outside=left => inside=right
+          const fixedIx = insideIsRight ? baseRx : baseLx
+          const fixedIy = insideIsRight ? baseRy : baseLy
+          for (let j = 0; j <= k; j++) {
+            const th = a0 + (d * (j / k))
+            const ox = p.x + Math.cos(th) * radius
+            const oy = p.y + Math.sin(th) * radius
+            if (insideIsRight) {
+              // [outside left = ox,oy] with fixed right
+              lDyn.push(ox, oy)
+              rDyn.push(fixedIx, fixedIy)
+            } else {
+              // outside right into rDyn
+              lDyn.push(fixedIx, fixedIy)
+              rDyn.push(ox, oy)
+            }
+          }
+          continue
+        }
+      }
+      // Default: copy pair as-is
+      lDyn.push(L[i * 2 + 0], L[i * 2 + 1])
+      rDyn.push(R[i * 2 + 0], R[i * 2 + 1])
+    }
+    L = new Float32Array(lDyn)
+    R = new Float32Array(rDyn)
+  }
 
   // Build interleaved strip
-  const strip = buildStrip(left, right)
+  let strip = buildStrip(L, R)
+
+  // Apply end caps (square: offset ends along tangent; round: add a small fan)
+  const capStart = params.capStart ?? 'butt'
+  const capEnd = params.capEnd ?? 'butt'
+  if (capStart !== 'butt' || capEnd !== 'butt') {
+    // Compute endpoint tangents (unit vectors) from centers of the built strip pairs
+    const pairCount = strip.positions.length / 4
+    const centerAt = (idx: number) => {
+      const off = idx * 4
+      const lx = strip.positions[off + 0]
+      const ly = strip.positions[off + 1]
+      const rx = strip.positions[off + 2]
+      const ry = strip.positions[off + 3]
+      return { x: (lx + rx) * 0.5, y: (ly + ry) * 0.5 }
+    }
+    const tStart = (() => {
+      const c0 = centerAt(0)
+      const c1 = centerAt(Math.min(1, pairCount - 1))
+      const dx = c1.x - c0.x, dy = c1.y - c0.y
+      const l = Math.hypot(dx, dy) || 1
+      return { x: dx / l, y: dy / l }
+    })()
+    const tEnd = (() => {
+      const cN = centerAt(pairCount - 1)
+      const cN1 = centerAt(Math.max(0, pairCount - 2))
+      const dx = cN.x - cN1.x, dy = cN.y - cN1.y
+      const l = Math.hypot(dx, dy) || 1
+      return { x: dx / l, y: dy / l }
+    })()
+
+    // Helper to mutate positions for square caps
+    const applySquareAt = (at: 'start' | 'end') => {
+      // Use current strip pair count to locate endpoints (after any join expansion)
+      const i = at === 'start' ? 0 : (pairCount - 1)
+      const off = i * 4
+      // Map back to centerline index for width; clamp to valid range
+      const nPts = half.length
+      const srcI = at === 'start' ? 0 : (nPts - 1)
+      const hw = half[Math.max(0, Math.min(nPts - 1, srcI))]
+      const t = at === 'start' ? { x: -tStart.x, y: -tStart.y } : tEnd
+      // Shift L and R positions by +/- tangent * halfWidth (same direction for square)
+      strip.positions[off + 0] += t.x * hw
+      strip.positions[off + 1] += t.y * hw
+      strip.positions[off + 2] += t.x * hw
+      strip.positions[off + 3] += t.y * hw
+    }
+
+    if (capStart === 'square') applySquareAt('start')
+    if (capEnd === 'square') applySquareAt('end')
+
+    // Round caps via small triangle fan at ends; keep vertex count small (k ~ 6)
+    const addRoundCap = (at: 'start' | 'end') => {
+      const pairN = strip.positions.length / 4
+      const i = at === 'start' ? 0 : (pairN - 1)
+      const off = i * 4
+      const center = (() => {
+        const lx = strip.positions[off + 0], ly = strip.positions[off + 1]
+        const rx = strip.positions[off + 2], ry = strip.positions[off + 3]
+        return { x: (lx + rx) * 0.5, y: (ly + ry) * 0.5 }
+      })()
+      const vL = { x: strip.positions[off + 0] - center.x, y: strip.positions[off + 1] - center.y }
+      const vR = { x: strip.positions[off + 2] - center.x, y: strip.positions[off + 3] - center.y }
+      const angL = Math.atan2(vL.y, vL.x)
+      // Sweep half circle from left to right around the front/back depending on end
+      const sweep = Math.PI
+      const dir = at === 'start' ? -1 : 1 // start cap sweeps backward
+      const k = 6 // segments along the semicircle (lightweight)
+      const baseVertCount = strip.positions.length / 2
+      // Append center vertex
+      const newPos: number[] = Array.from(strip.positions)
+      const newUvs: number[] = Array.from(strip.uvs)
+      const newIdx: number[] = Array.from(strip.indices as any)
+      newPos.push(center.x, center.y)
+      newUvs.push(0, 0)
+      const cIdx = baseVertCount
+      // Generate internal arc points (exclude endpoints since L/R already exist)
+      const radius = Math.hypot(vL.x, vL.y) || (half[i])
+      const arcIdxs: number[] = []
+      for (let j = 1; j < k; j++) {
+        const a = angL + dir * (sweep * (j / k))
+        const ax = center.x + Math.cos(a) * radius
+        const ay = center.y + Math.sin(a) * radius
+        newPos.push(ax, ay)
+        newUvs.push(0, 0)
+        arcIdxs.push(baseVertCount + j)
+      }
+      // Existing endpoints
+      const leftIdx = i * 2 + 0
+      const rightIdx = i * 2 + 1
+      // Triangulate fan from center across [L, ...arc..., R]
+      let prev = leftIdx
+      for (let j = 0; j <= arcIdxs.length; j++) {
+        const next = (j < arcIdxs.length) ? arcIdxs[j] : rightIdx
+        newIdx.push(cIdx, prev, next)
+        prev = next
+      }
+      // Commit arrays back
+      strip = {
+        positions: new Float32Array(newPos),
+        uvs: new Float32Array(newUvs),
+        indices: (() => {
+          // choose type based on max index
+          const maxIdx = Math.max(...newIdx)
+          if (maxIdx <= 65535) return new Uint16Array(newIdx) as any
+          return new Uint32Array(newIdx) as any
+        })(),
+      }
+    }
+
+    if (capStart === 'round') addRoundCap('start')
+    if (capEnd === 'round') addRoundCap('end')
+  }
 
   return {
     strip,

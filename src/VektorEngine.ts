@@ -3,13 +3,14 @@ import { createInputCapture, type InputSample, type PointerPhase } from './input
 import { LayersManager as LayerManager } from './layers'
 import { PlumaTool } from './tools/pluma'
 import { PincelContornoTool } from './tools/pincelContorno'
-import { LapizVectorTool } from './tools/lapizVector'
+// import { LapizVectorTool } from './tools/lapizVector'
+import { LapizVectorialOriTool } from './tools/lapizVectorialOri'
 import { LapizRasterTool } from './tools/lapizRaster'
-import { SimpleRopeTool } from './tools/simpleRope'
+
 import { LayerBatch } from './graphics/LayerBatch'
 import { HistoryManager } from './history'
 
-export type ToolKey = 'pluma' | 'vpen' | 'raster' | 'contorno' | 'rope'
+export type ToolKey = 'pluma' | 'vpen' | 'raster' | 'contorno'
 export class VektorEngine {
   private app: Application
   private world: Container
@@ -23,7 +24,7 @@ export class VektorEngine {
   private mountEl: HTMLElement | null = null
 
   private tools: Record<ToolKey, any>
-  private activeToolKey: ToolKey = 'rope'
+  private activeToolKey: ToolKey = 'vpen'
   private drawing = false
   private panMode = false
   private isPanningDrag = false
@@ -108,9 +109,8 @@ export class VektorEngine {
     this.tools = {
       pluma: new PlumaTool(),
       contorno: new PincelContornoTool(),
-      vpen: new LapizVectorTool(),
+      vpen: new LapizVectorialOriTool(),
       raster: new LapizRasterTool(),
-      rope: new SimpleRopeTool(),
     }
 
     // Propagar estilo inicial a todas las herramientas
@@ -164,6 +164,14 @@ export class VektorEngine {
       preserveDrawingBuffer: false as any,
     })
     this.currentAA = !!prefAA
+
+    // Read low-latency preference (default ON). If missing, keep true.
+    try {
+      const s = localStorage.getItem('vi.lowLatency')
+      if (s != null) this.lowLatency = s === '1' || s === 'true'
+    } catch {}
+    // Adjust preview cadence according to current lowLatency before wiring input
+    this.previewMinMsOverride = this.lowLatency ? 8 : null
 
     // Detect 32-bit index support (avoid geometry glitches on some mobile GPUs)
     try {
@@ -227,8 +235,7 @@ export class VektorEngine {
   if (e.code === 'Digit1') this.activeToolKey = 'pluma'
       else if (e.code === 'Digit2') this.activeToolKey = 'vpen'
       else if (e.code === 'Digit3') this.activeToolKey = 'raster'
-      else if (e.code === 'Digit4') this.activeToolKey = 'contorno'
-  else if (e.code === 'Digit5') this.activeToolKey = 'rope'
+    else if (e.code === 'Digit4') this.activeToolKey = 'contorno'
   // else if (e.code === 'KeyD') { this.setDebugInputOverlay(!this.debugOverlayEnabled) } // debug overlay disabled
       else if (e.code === 'KeyN') this.layers.create(`Capa ${this.layers.list().length + 1}`)
       else if (e.code === 'Delete') {
@@ -368,22 +375,17 @@ export class VektorEngine {
         // Reset previous gesture measurements
         this.gesturePrev = { dist: 0, midX: 0, midY: 0 }
       }
-      // Enviar a worker de previsualización (coordenadas en espacio de canvas) si está habilitado,
-      // excepto cuando la herramienta es 'rope' y requiere preview fiel (exacto).
+      // Enviar a worker de previsualización (coordenadas en espacio de canvas) si está habilitado
       if (this.previewEnabled && this.previewWorker && !this.panMode && !this.isPanningDrag) {
-        const isRope = this.activeToolKey === 'rope'
-        // Never send rope previews to the worker; rope uses internal exact preview only
-        if (!isRope) {
-          try {
-            const msg: any = {
-              type: 'samples',
-              phase,
-              samples: samples.map((s) => ({ x: s.x, y: s.y, pressure: this.pressureSensitivity ? (s.pressure ?? 1) : 1, predicted: (s as any).predicted ? true : false })),
-              style: { color: this.strokeColor >>> 0, opacity: this.opacity, width: this.strokeSize, pressure: !!this.pressureSensitivity },
-            }
-            this.previewWorker.postMessage(msg)
-          } catch {}
-        }
+        try {
+          const msg: any = {
+            type: 'samples',
+            phase,
+            samples: samples.map((s) => ({ x: s.x, y: s.y, pressure: this.pressureSensitivity ? (s.pressure ?? 1) : 1, predicted: (s as any).predicted ? true : false })),
+            style: { color: this.strokeColor >>> 0, opacity: this.opacity, width: this.strokeSize, pressure: !!this.pressureSensitivity },
+          }
+          this.previewWorker.postMessage(msg)
+        } catch {}
       }
       // Modo pan: usar drag para desplazar world
       if (this.panMode || this.isPanningDrag) {
@@ -428,11 +430,8 @@ export class VektorEngine {
         case 'start':
           this.drawing = true
           // Si usamos preview offscreen, notificar a la herramienta para que no pinte su propio preview.
-          // Para 'rope' con preview fiel, usar preview interno (idéntico al final).
           try {
-            const isRope = this.activeToolKey === 'rope'
-            // For rope, always use internal preview to guarantee parity with final
-            const useExternal = this.previewEnabled && (!isRope)
+            const useExternal = this.previewEnabled
             this.tools[this.activeToolKey]?.setExternalPreviewEnabled?.(useExternal)
           } catch {}
           tool.start(layer)
@@ -509,7 +508,7 @@ export class VektorEngine {
   }
 
   setActiveTool(toolName: string) {
-  const name = (['pluma', 'vpen', 'raster', 'contorno', 'ultra', 'rope'] as string[]).includes(toolName) ? (toolName as ToolKey) : 'pluma'
+  const name = (['pluma', 'vpen', 'raster', 'contorno'] as string[]).includes(toolName) ? (toolName as ToolKey) : 'pluma'
     this.activeToolKey = name
   }
 
@@ -759,19 +758,12 @@ export class VektorEngine {
   const window = 1 + Math.round(smooth * 2) // 1..3 samples to avoid over-smoothing speed
   const thinningCfg = { minSpeedScale, exponent, speedRefPxPerMs, window, smooth, invert }
 
-        // Map preview quality to decimation and cadence (overridden for 'rope')
+        // Map preview quality to decimation and cadence
         const q = Math.max(0, Math.min(1, this.previewQuality))
-        let previewDecimatePx = (1 - q) * 3.0 // 0..3 px
-        let previewMinMs = 33 - Math.round(q * 25) // 8..33 ms
+        const previewDecimatePx = (1 - q) * 3.0 // 0..3 px
+        const previewMinMs = 33 - Math.round(q * 25) // 8..33 ms
 
-        // For SimpleRope, ensure exact, ultra-responsive preview (no decimation, minMs 0)
-        const isRope = key === 'rope'
-        if (isRope) {
-          previewDecimatePx = 0
-          previewMinMs = 0
-        }
-
-        t.setStyle({
+        const style: any = {
           strokeSize: this.strokeSize,
           strokeColor: this.strokeColor,
           opacity: this.opacity,
@@ -781,9 +773,8 @@ export class VektorEngine {
           jitter: { amplitude: this.jitter.amplitude, frequency: this.jitter.frequency, domain: this.jitter.domain, smooth, seed: (Date.now() & 0xffffffff) >>> 0 },
           streamline: this.freehand.streamline,
           preview: { decimatePx: previewDecimatePx, minMs: this.previewMinMsOverride ?? previewMinMs },
-          // Hint for rope to keep internal preview identical to final
-          previewExact: isRope ? true : undefined,
-        })
+        }
+        t.setStyle(style)
       }
     }
   }
@@ -806,7 +797,6 @@ export class VektorEngine {
     this.opacity = Math.max(0.01, Math.min(1, alpha))
     this.applyStyleToTools()
     this._scheduleAutosave()
-    try { (this.tools as any)?.rope?.setExactPreviewEnabled?.(this.opacity < 1) } catch {}
   }
   getOpacity() { return this.opacity }
 
@@ -833,6 +823,8 @@ export class VektorEngine {
     this.lowLatency = next
     // Faster preview cadence when on
     this.previewMinMsOverride = this.lowLatency ? 8 : null
+    // Persist preference so it's default across sessions
+    try { localStorage.setItem('vi.lowLatency', this.lowLatency ? '1' : '0') } catch {}
     // Recreate input capture with rawupdate when toggled
     try { this.inputCaptureDispose?.() } catch {}
     if (this._onSamplesBound) {
@@ -902,21 +894,7 @@ export class VektorEngine {
   }
   getBackgroundColor() { return this.backgroundColor }
 
-  // --- Rope exact preview API ---
-  setRopeExactPreview(on: boolean) { try { (this.tools as any)?.rope?.setExactPreviewEnabled?.(!!on) } catch {} }
-  getRopeExactPreview() { try { return !!(this.tools as any)?.rope?.getExactPreviewEnabled?.() } catch { return false } }
-
-  // --- Rope streamline API (convenience) ---
-  setRopeStreamline(v: number) {
-    const clamped = Math.max(0, Math.min(0.5, Number(v) || 0))
-    // Keep single source of truth in freehand so other tools can share if desired
-    this.freehand.streamline = clamped
-    this.applyStyleToTools()
-    this._scheduleAutosave()
-  }
-  getRopeStreamline() {
-    try { return (this.tools as any)?.rope?.getStreamline?.() ?? this.freehand.streamline } catch { return this.freehand.streamline }
-  }
+  // Rope tool removed; rope-specific APIs have been deleted.
 
   // --- History API ---
   private _emitHistoryChange() { for (const fn of this.historyListeners) { try { fn() } catch {} } }

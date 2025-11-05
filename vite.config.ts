@@ -9,11 +9,14 @@ export default defineConfig({
   base: '/VektorInk3/',
   plugins: [react()],
   server: {
-    open: true,
+    // Abre directamente la ruta base para evitar "Not Found" al abrir / en dev
+    open: '/VektorInk3/',
     port: 5173,
   },
   preview: {
     port: 5173,
+    // Consistencia al hacer vite preview
+    open: '/VektorInk3/',
   },
   // Worker options are fine by default for Vite; left here for clarity
   worker: {
