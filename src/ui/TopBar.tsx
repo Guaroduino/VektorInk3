@@ -36,7 +36,10 @@ export const TopBar: React.FC = () => {
   const [blend, setBlend] = useState(() => engine.getBlendMode?.() ?? 'normal')
   const [opacity, setOpacity] = useState(() => engine.getOpacity?.() ?? 1)
   const [pressure, setPressure] = useState(() => engine.getPressureSensitivity?.() ?? true)
-  const [ropeExact, setRopeExact] = useState(() => (engine as any).getRopeExactPreview?.() ?? true)
+  const [ropeExact, setRopeExact] = useState(true)
+  const [ropeStream, setRopeStream] = useState<number>(() => {
+    try { return (engine as any).getRopeStreamline?.() ?? (engine.getFreehandParams?.().streamline ?? 0.2) } catch { return 0.2 }
+  })
 
   // Global state
   const [bgHex, setBgHex] = useState(() => `#${(engine.getBackgroundColor?.() ?? 0x111111).toString(16).padStart(6,'0')}`)
@@ -92,7 +95,9 @@ export const TopBar: React.FC = () => {
   const onBlendChange = (v:string) => { setBlend(v); engine.setBlendMode?.(v) }
   const onOpacity = (v:number) => { setOpacity(v); engine.setOpacity?.(v) }
   const onPressure = (on:boolean) => { setPressure(on); engine.setPressureSensitivity?.(on) }
-  const onRopeExact = (on:boolean) => { setRopeExact(on); (engine as any).setRopeExactPreview?.(on) }
+  // Rope preview is always exact; keep UI disabled
+  const onRopeExact = (_on:boolean) => { setRopeExact(true) }
+  const onRopeStreamline = (v:number) => { setRopeStream(v); (engine as any).setRopeStreamline?.(v) }
 
   // Handlers global
   const onBg = (hex:string) => { setBgHex(hex); const n=parseInt(hex.replace('#',''),16)>>>0; engine.setBackgroundColor?.(n) }
@@ -311,6 +316,11 @@ export const TopBar: React.FC = () => {
               <Palette size={16} className="opacity-80" />
               <input type="color" value={strokeHex} onChange={e=>onStroke(e.target.value)} className="h-7 w-7 rounded-md border border-gray-300 bg-transparent p-0" />
             </div>
+            <div className="flex items-center gap-2" title="Suavizado (streamline)">
+              <span className="text-sm w-20">Suavizado</span>
+              <input type="range" min={0} max={0.5} step={0.01} value={ropeStream} onChange={e=>onRopeStreamline(Number(e.target.value))} className="w-40 accent-blue-500" />
+              <span className="text-xs w-10 text-right">{ropeStream.toFixed(2)}</span>
+            </div>
             <div className="flex items-center gap-2" title="Blend mode">
               <button aria-label="Normal" onClick={()=>onBlendChange('normal')} data-active={blend==='normal'} className="p-1.5 border border-gray-300 rounded-md hover:bg-gray-100 data-[active=true]:bg-blue-600 data-[active=true]:text-white"><Square size={16}/></button>
               <button aria-label="Add" onClick={()=>onBlendChange('add')} data-active={blend==='add'} className="p-1.5 border border-gray-300 rounded-md hover:bg-gray-100 data-[active=true]:bg-blue-600 data-[active=true]:text-white"><Plus size={16}/></button>
@@ -325,8 +335,8 @@ export const TopBar: React.FC = () => {
               <input type="checkbox" checked={pressure} onChange={e=>onPressure(e.target.checked)} />
               <MousePointer2 size={16} className="opacity-80" />
             </div>
-            <div className="flex items-center gap-2" title="Preview exacto (igual al trazo final)">
-              <input type="checkbox" checked={ropeExact} onChange={e=>onRopeExact(e.target.checked)} />
+            <div className="flex items-center gap-2 opacity-70" title="Preview exacto (siempre activo para Rope)">
+              <input type="checkbox" checked={true} disabled />
               <span className="text-sm">Preview exacto</span>
             </div>
           </div>

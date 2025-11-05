@@ -1,4 +1,4 @@
-import { Application, Container, Text, Mesh, MeshGeometry, Texture } from 'pixi.js'
+import { Application, Container, Text, Mesh, MeshGeometry, Texture, Graphics } from 'pixi.js'
 import { createInputCapture, type InputSample, type PointerPhase } from './input'
 import { LayersManager as LayerManager } from './layers'
 import { PlumaTool } from './tools/pluma'
@@ -10,7 +10,6 @@ import { LayerBatch } from './graphics/LayerBatch'
 import { HistoryManager } from './history'
 
 export type ToolKey = 'pluma' | 'vpen' | 'raster' | 'contorno' | 'rope'
-
 export class VektorEngine {
   private app: Application
   private world: Container
@@ -79,6 +78,11 @@ export class VektorEngine {
   private pointerPositions = new Map<number, { x: number; y: number; pointerType: string }>()
   private gestureActive: boolean = false
   private gestureStart = { zoom: 1, dist: 0, midX: 0, midY: 0 }
+  private gesturePrev = { dist: 0, midX: 0, midY: 0 }
+  // Debug overlay for input
+  private debugOverlayEnabled: boolean = false
+  private debugGfx: Graphics | null = null
+  private debugText: Text | null = null
 
   // --- Project I/O ---
   private projectVersion = 1
@@ -187,6 +191,7 @@ export class VektorEngine {
       }
       if (this.overlayText.parent !== this.app.stage) this.app.stage.addChild(this.overlayText)
       this._updateOverlay()
+      // Touch debug overlay disabled
     } catch {}
     // Start FPS loop
     this._startFpsLoop()
@@ -222,6 +227,7 @@ export class VektorEngine {
       else if (e.code === 'Digit3') this.activeToolKey = 'raster'
       else if (e.code === 'Digit4') this.activeToolKey = 'contorno'
   else if (e.code === 'Digit5') this.activeToolKey = 'rope'
+  // else if (e.code === 'KeyD') { this.setDebugInputOverlay(!this.debugOverlayEnabled) } // debug overlay disabled
       else if (e.code === 'KeyN') this.layers.create(`Capa ${this.layers.list().length + 1}`)
       else if (e.code === 'Delete') {
         const a = this.layers.active
@@ -274,16 +280,26 @@ export class VektorEngine {
   private _onSamples(id: number, samples: InputSample[], phase: PointerPhase, _rawEvent?: PointerEvent) {
       // Update active pointer map for multi-touch gestures
       const last = samples[samples.length - 1]
-      if (last) {
+      if (last && last.pointerType === 'touch') {
         if (phase === 'start' || phase === 'move') {
           this.pointerPositions.set(id, { x: last.x, y: last.y, pointerType: last.pointerType })
         } else if (phase === 'end' || phase === 'cancel') {
           this.pointerPositions.delete(id)
         }
+      } else if ((phase === 'end' || phase === 'cancel')) {
+        // Fallback: if no sample or missing pointerType, remove by id to avoid stale pointers
+        if (this.pointerPositions.has(id)) this.pointerPositions.delete(id)
       }
+  // Touch debug overlay removed
 
       // Consider only touch contacts for pinch/pan to avoid mixing mouse/pen
       const touchPointers = Array.from(this.pointerPositions.entries()).filter(([, v]) => v.pointerType === 'touch') as Array<[number, { x: number; y: number; pointerType: string }]>;
+      // If after processing this event there are no touch pointers left, hard-clear state to avoid ghosts
+      if ((phase === 'end' || phase === 'cancel') && touchPointers.length === 0) {
+        this.gestureActive = false
+        this.pointerPositions.clear()
+        this._updateDebugOverlay(phase)
+      }
       // If this is the first contact of a new interaction, clear any stale state
       if (phase === 'start' && touchPointers.length === 1 && this.gestureActive) {
         this.gestureActive = false
@@ -306,6 +322,9 @@ export class VektorEngine {
             this.gestureStart.dist = Math.max(1e-3, dist)
             this.gestureStart.midX = midX
             this.gestureStart.midY = midY
+            this.gesturePrev.dist = this.gestureStart.dist
+            this.gesturePrev.midX = midX
+            this.gesturePrev.midY = midY
             // If a stroke was in progress, cancel it to avoid stuck state when starting a gesture
             if (this.drawing) {
               this.drawing = false
@@ -316,21 +335,39 @@ export class VektorEngine {
           }
           const factor = Math.max(0.05, Math.min(20, dist / Math.max(1e-3, this.gestureStart.dist)))
           const targetZoom = this.gestureStart.zoom * factor
-          this.setZoom(targetZoom, midX, midY)
+          // Split pan vs zoom: if scale change is tiny, treat as pan-only
+          const scaleDelta = Math.abs(factor - 1)
+          if (scaleDelta < 0.02) {
+            // Two-finger pan: move world by midpoint delta in canvas space
+            const mdx = midX - this.gesturePrev.midX
+            const mdy = midY - this.gesturePrev.midY
+            this.world.position.x += mdx
+            this.world.position.y += mdy
+          } else {
+            // Pinch-zoom anchored at the current midpoint
+            this.setZoom(targetZoom, midX, midY)
+          }
+          // Update previous midpoint/dist
+          this.gesturePrev.midX = midX
+          this.gesturePrev.midY = midY
+          this.gesturePrev.dist = dist
           // Skip preview/drawing while gesturing
           return
         }
       } else if (this.gestureActive) {
         // Gesture ends when fewer than two touch pointers remain
         this.gestureActive = false
+        // Clear any residual pointer state to avoid stale second contacts
+        this.pointerPositions.clear()
+        // Reset previous gesture measurements
+        this.gesturePrev = { dist: 0, midX: 0, midY: 0 }
       }
       // Enviar a worker de previsualización (coordenadas en espacio de canvas) si está habilitado,
       // excepto cuando la herramienta es 'rope' y requiere preview fiel (exacto).
       if (this.previewEnabled && this.previewWorker && !this.panMode && !this.isPanningDrag) {
         const isRope = this.activeToolKey === 'rope'
-        let ropeExact = false
-        try { ropeExact = isRope ? !!(this.tools as any)?.rope?.getExactPreviewEnabled?.() : false } catch {}
-        if (!(isRope && ropeExact)) {
+        // Never send rope previews to the worker; rope uses internal exact preview only
+        if (!isRope) {
           try {
             const msg: any = {
               type: 'samples',
@@ -381,9 +418,8 @@ export class VektorEngine {
           // Para 'rope' con preview fiel, usar preview interno (idéntico al final).
           try {
             const isRope = this.activeToolKey === 'rope'
-            let ropeExact = false
-            try { ropeExact = isRope ? !!(this.tools as any)?.rope?.getExactPreviewEnabled?.() : false } catch {}
-            const useExternal = this.previewEnabled && (!isRope || !ropeExact)
+            // For rope, always use internal preview to guarantee parity with final
+            const useExternal = this.previewEnabled && (!isRope)
             this.tools[this.activeToolKey]?.setExternalPreviewEnabled?.(useExternal)
           } catch {}
           tool.start(layer)
@@ -451,6 +487,10 @@ export class VektorEngine {
               }
             })
           }
+          // Ensure no stale touch pointers remain after finishing a drawing stroke
+          this.gestureActive = false
+          try { this.pointerPositions.clear() } catch {}
+    // Touch debug overlay removed
           break
       }
   }
@@ -637,6 +677,58 @@ export class VektorEngine {
     } catch {}
   }
 
+  // --- Debug overlay for input pointers ---
+  private _updateDebugOverlay(phase: PointerPhase) {
+    if (!this.debugOverlayEnabled) {
+      if (this.debugGfx) this.debugGfx.visible = false
+      if (this.debugText) this.debugText.visible = false
+      return
+    }
+    const g = this.debugGfx
+    const t = this.debugText
+    if (!g || !t) return
+    g.visible = true
+    t.visible = true
+    try {
+      g.clear()
+      // Draw active touch pointers
+      const touches = Array.from(this.pointerPositions.entries()).filter(([, v]) => v.pointerType === 'touch')
+      for (const [, p] of touches) {
+        g.lineStyle(2, 0x00ffff, 1)
+        g.beginFill(0x00ffff, 0.15)
+        g.drawCircle(p.x, p.y, 18)
+        g.endFill()
+        g.lineStyle(1, 0xffffff, 0.8)
+        g.drawCircle(p.x, p.y, 6)
+      }
+      // If two touches, draw line and midpoint
+      if (touches.length >= 2) {
+        const a = touches[0][1]
+        const b = touches[1][1]
+        const midX = (a.x + b.x) * 0.5
+        const midY = (a.y + b.y) * 0.5
+        g.lineStyle(2, 0xffcc00, 1)
+        g.moveTo(a.x, a.y)
+        g.lineTo(b.x, b.y)
+        g.lineStyle(2, 0xff6600, 1)
+        g.drawCircle(midX, midY, 5)
+      }
+      // Debug text (bottom-left, above overlay watermark to avoid top toolbar)
+      const fpsText = `FPS ${Math.max(0, Math.round(this.fps || 0))}`
+      const info = `Ptrs ${this.pointerPositions.size} touch ${touches.length} • gesture ${this.gestureActive ? 'ON' : 'OFF'} • phase ${phase}`
+      t.text = `${info}`
+      t.x = 8
+      try {
+        const rh = (this.app.renderer as any)?.height ?? 0
+        const margin = 8
+        const overlayH = this.overlayText ? (this.overlayText.height || 12) : 0
+        t.y = Math.max(margin, rh - margin - overlayH - (t.height || 12) - 4)
+      } catch {
+        t.y = 8
+      }
+    } catch {}
+  }
+
   // --- API de estilo ---
   private applyStyleToTools() {
     for (const key of Object.keys(this.tools) as ToolKey[]) {
@@ -654,10 +746,17 @@ export class VektorEngine {
   const window = 1 + Math.round(smooth * 2) // 1..3 samples to avoid over-smoothing speed
   const thinningCfg = { minSpeedScale, exponent, speedRefPxPerMs, window, smooth, invert }
 
-        // Map preview quality to decimation and cadence
+        // Map preview quality to decimation and cadence (overridden for 'rope')
         const q = Math.max(0, Math.min(1, this.previewQuality))
-        const previewDecimatePx = (1 - q) * 3.0 // 0..3 px
-        const previewMinMs = 33 - Math.round(q * 25) // 8..33 ms
+        let previewDecimatePx = (1 - q) * 3.0 // 0..3 px
+        let previewMinMs = 33 - Math.round(q * 25) // 8..33 ms
+
+        // For SimpleRope, ensure exact, ultra-responsive preview (no decimation, minMs 0)
+        const isRope = key === 'rope'
+        if (isRope) {
+          previewDecimatePx = 0
+          previewMinMs = 0
+        }
 
         t.setStyle({
           strokeSize: this.strokeSize,
@@ -669,6 +768,8 @@ export class VektorEngine {
           jitter: { amplitude: this.jitter.amplitude, frequency: this.jitter.frequency, domain: this.jitter.domain, smooth, seed: (Date.now() & 0xffffffff) >>> 0 },
           streamline: this.freehand.streamline,
           preview: { decimatePx: previewDecimatePx, minMs: this.previewMinMsOverride ?? previewMinMs },
+          // Hint for rope to keep internal preview identical to final
+          previewExact: isRope ? true : undefined,
         })
       }
     }
@@ -749,6 +850,15 @@ export class VektorEngine {
   }
   getPressureSensitivity() { return this.pressureSensitivity }
 
+  // --- Debug input overlay toggle ---
+  setDebugInputOverlay(on: boolean) {
+    this.debugOverlayEnabled = !!on
+    try {
+      if (this.debugGfx) this.debugGfx.visible = this.debugOverlayEnabled
+      if (this.debugText) this.debugText.visible = this.debugOverlayEnabled
+    } catch {}
+  }
+
   // --- Jitter API ---
   setJitterParams(params: { amplitude?: number; frequency?: number; domain?: 'distance' | 'time' }) {
     if (typeof params.amplitude === 'number') this.jitter.amplitude = Math.max(0, Math.min(1, params.amplitude))
@@ -774,6 +884,18 @@ export class VektorEngine {
   // --- Rope exact preview API ---
   setRopeExactPreview(on: boolean) { try { (this.tools as any)?.rope?.setExactPreviewEnabled?.(!!on) } catch {} }
   getRopeExactPreview() { try { return !!(this.tools as any)?.rope?.getExactPreviewEnabled?.() } catch { return false } }
+
+  // --- Rope streamline API (convenience) ---
+  setRopeStreamline(v: number) {
+    const clamped = Math.max(0, Math.min(0.5, Number(v) || 0))
+    // Keep single source of truth in freehand so other tools can share if desired
+    this.freehand.streamline = clamped
+    this.applyStyleToTools()
+    this._scheduleAutosave()
+  }
+  getRopeStreamline() {
+    try { return (this.tools as any)?.rope?.getStreamline?.() ?? this.freehand.streamline } catch { return this.freehand.streamline }
+  }
 
   // --- History API ---
   private _emitHistoryChange() { for (const fn of this.historyListeners) { try { fn() } catch {} } }
