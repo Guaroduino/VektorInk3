@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useEngine } from './EngineContext'
-import { Settings2, SlidersVertical, Droplet, Maximize2, Zap, Rocket, Sparkles, Wand2, RotateCcw, Download, Upload, History, Trash2, RefreshCcw } from 'lucide-react'
+import { PencilLine, Settings2, SlidersVertical, Palette, Droplet, Maximize2, Zap, Square, Plus, X, Sun, Rocket, Sparkles, Wand2, RotateCcw, MousePointer2, Download, Upload, History, Trash2, RefreshCcw } from 'lucide-react'
 
 /**
  * TopBar: barra superior continua con:
@@ -11,7 +11,7 @@ export const TopBar: React.FC = () => {
   const engine = useEngine()
   const barRef = useRef<HTMLDivElement | null>(null)
   const [openGlobal, setOpenGlobal] = useState(false)
-  // Rope tool removed; no local tool popover
+  const [openRope, setOpenRope] = useState(false)
   // Center presets (4 columnas: color arriba, tamaño abajo)
   const [colorPresets, setColorPresets] = useState<number[]>([0xffffff, 0x000000, 0xff4d4d, 0x00c2ff])
   const [sizePresets, setSizePresets] = useState<number[]>([4, 8, 12, 20])
@@ -33,7 +33,13 @@ export const TopBar: React.FC = () => {
   // Local state (aplica via engine)
   const [size, setSize] = useState(() => engine.getStrokeSize?.() ?? 8)
   const [strokeHex, setStrokeHex] = useState(() => `#${(engine.getStrokeColor?.() ?? 0xffffff).toString(16).padStart(6,'0')}`)
-  // Removed rope-specific local controls (blend, opacity, pressure, rope streamline, jitter).
+  const [blend, setBlend] = useState(() => engine.getBlendMode?.() ?? 'normal')
+  const [opacity, setOpacity] = useState(() => engine.getOpacity?.() ?? 1)
+  const [pressure, setPressure] = useState(() => engine.getPressureSensitivity?.() ?? true)
+  const [ropeExact, setRopeExact] = useState(true)
+  const [ropeStream, setRopeStream] = useState<number>(() => {
+    try { return (engine as any).getRopeStreamline?.() ?? (engine.getFreehandParams?.().streamline ?? 0.2) } catch { return 0.2 }
+  })
 
   // Global state
   const [bgHex, setBgHex] = useState(() => `#${(engine.getBackgroundColor?.() ?? 0x111111).toString(16).padStart(6,'0')}`)
@@ -49,7 +55,7 @@ export const TopBar: React.FC = () => {
       if (!barRef.current) return
       // Click fuera de toda la barra: cierra todo
       if (!barRef.current.contains(target)) {
-  setOpenGlobal(false); setEditingSizeIdx(null)
+        setOpenGlobal(false); setOpenRope(false); setEditingSizeIdx(null)
         return
       }
       // Dentro de la barra: si hay slider abierto y el click no es en el botón activo ni en el popover, ciérralo
@@ -65,15 +71,34 @@ export const TopBar: React.FC = () => {
     return () => document.removeEventListener('pointerdown', onDoc)
   }, [editingSizeIdx])
 
+  // Tool: SimpleRope button interactions (long-press)
+  const lpTimer = useRef<number | null>(null)
+  const lpTriggered = useRef(false)
   const LP_MS = 450
-  // Long-press delay reused for color/size preset editing
+  const onRopeDown = () => {
+    lpTriggered.current = false
+    if (lpTimer.current) window.clearTimeout(lpTimer.current)
+    lpTimer.current = window.setTimeout(() => { lpTriggered.current = true; setOpenRope(true) }, LP_MS)
+  }
+  const onRopeUp = () => {
+    if (lpTimer.current) { window.clearTimeout(lpTimer.current); lpTimer.current = null }
+    // Short click => select tool
+    if (!lpTriggered.current) {
+      engine.setActiveTool?.('rope')
+      setOpenRope(false)
+    }
+  }
+  const onRopeLeave = () => { if (lpTimer.current) { window.clearTimeout(lpTimer.current); lpTimer.current = null } }
 
   // Handlers local
   const onSize = (v:number) => { setSize(v); engine.setStrokeSize?.(v) }
   const onStroke = (hex:string) => { setStrokeHex(hex); const n = parseInt(hex.replace('#',''),16)>>>0; engine.setStrokeColor?.(n) }
-  // Removed rope/local-only handlers
-
-  // No advanced local menu
+  const onBlendChange = (v:string) => { setBlend(v); engine.setBlendMode?.(v) }
+  const onOpacity = (v:number) => { setOpacity(v); engine.setOpacity?.(v) }
+  const onPressure = (on:boolean) => { setPressure(on); engine.setPressureSensitivity?.(on) }
+  // Rope preview is always exact; keep UI disabled
+  const onRopeExact = (_on:boolean) => { setRopeExact(true) }
+  const onRopeStreamline = (v:number) => { setRopeStream(v); (engine as any).setRopeStreamline?.(v) }
 
   // Handlers global
   const onBg = (hex:string) => { setBgHex(hex); const n=parseInt(hex.replace('#',''),16)>>>0; engine.setBackgroundColor?.(n) }
@@ -159,8 +184,23 @@ export const TopBar: React.FC = () => {
     <div ref={barRef} className="absolute top-0 left-0 right-0 z-[9999] pointer-events-auto">
       {/* Bar container */}
       <div className="mx-4 mt-3 bg-white text-gray-900 border border-gray-300 rounded-lg shadow-md px-2 h-10 flex items-center">
-        {/* Left: tools (none for now) */}
-        <div className="flex items-center gap-1" />
+        {/* Left: tools */}
+        <div className="flex items-center gap-1">
+          {/* SimpleRope tool */}
+          <button
+            aria-label="SimpleRope"
+            onMouseDown={onRopeDown}
+            onMouseUp={onRopeUp}
+            onMouseLeave={onRopeLeave}
+            onTouchStart={onRopeDown}
+            onTouchEnd={onRopeUp}
+            onDoubleClick={() => { if (lpTimer.current) { window.clearTimeout(lpTimer.current); lpTimer.current = null }; lpTriggered.current = true; setOpenRope(v=>!v); setOpenGlobal(false) }}
+            className="p-1.5 rounded-md border border-gray-300 hover:bg-gray-100"
+            title="SimpleRope (click) • Ajustes (mantener o doble click)"
+          >
+            <PencilLine size={18} />
+          </button>
+        </div>
         {/* Center: presets (dos grupos, alineados verticalmente) */}
         <div className="flex-1 flex items-center justify-center gap-4">
           {/* Grupo colores */}
@@ -257,7 +297,7 @@ export const TopBar: React.FC = () => {
           />
           <button
             aria-label="Global settings"
-            onClick={() => { setOpenGlobal(v=>!v) }}
+            onClick={() => { setOpenGlobal(v=>!v); setOpenRope(false) }}
             className="p-1.5 rounded-md border border-gray-300 hover:bg-gray-100"
             title="Ajustes globales"
           >
@@ -265,7 +305,45 @@ export const TopBar: React.FC = () => {
           </button>
         </div>
       </div>
-      
+
+      {/* Rope popover (left aligned under bar) */}
+      {openRope && (
+        <div className="absolute left-4 top-[56px] bg-white text-gray-900 border border-gray-300 rounded-lg shadow-lg p-3 w-[320px]">
+          <div className="grid gap-2">
+            <div className="flex items-center gap-2" title="Tamaño">
+              <SlidersVertical size={16} className="opacity-80" />
+              <input type="range" min={1} max={64} step={1} value={size} onChange={e=>onSize(Number(e.target.value))} className="w-48 accent-blue-500" />
+            </div>
+            <div className="flex items-center gap-2" title="Color de trazo">
+              <Palette size={16} className="opacity-80" />
+              <input type="color" value={strokeHex} onChange={e=>onStroke(e.target.value)} className="h-7 w-7 rounded-md border border-gray-300 bg-transparent p-0" />
+            </div>
+            <div className="flex items-center gap-2" title="Suavizado (streamline)">
+              <span className="text-sm w-20">Suavizado</span>
+              <input type="range" min={0} max={0.5} step={0.01} value={ropeStream} onChange={e=>onRopeStreamline(Number(e.target.value))} className="w-40 accent-blue-500" />
+              <span className="text-xs w-10 text-right">{ropeStream.toFixed(2)}</span>
+            </div>
+            <div className="flex items-center gap-2" title="Blend mode">
+              <button aria-label="Normal" onClick={()=>onBlendChange('normal')} data-active={blend==='normal'} className="p-1.5 border border-gray-300 rounded-md hover:bg-gray-100 data-[active=true]:bg-blue-600 data-[active=true]:text-white"><Square size={16}/></button>
+              <button aria-label="Add" onClick={()=>onBlendChange('add')} data-active={blend==='add'} className="p-1.5 border border-gray-300 rounded-md hover:bg-gray-100 data-[active=true]:bg-blue-600 data-[active=true]:text-white"><Plus size={16}/></button>
+              <button aria-label="Multiply" onClick={()=>onBlendChange('multiply')} data-active={blend==='multiply'} className="p-1.5 border border-gray-300 rounded-md hover:bg-gray-100 data-[active=true]:bg-blue-600 data-[active=true]:text-white"><X size={16}/></button>
+              <button aria-label="Screen" onClick={()=>onBlendChange('screen')} data-active={blend==='screen'} className="p-1.5 border border-gray-300 rounded-md hover:bg-gray-100 data-[active=true]:bg-blue-600 data-[active=true]:text-white"><Sun size={16}/></button>
+              <div className="ml-auto flex items-center gap-2" title="Opacidad">
+                <Droplet size={16} className="opacity-80" />
+                <input type="range" min={0.05} max={1} step={0.01} value={opacity} onChange={e=>onOpacity(Number(e.target.value))} className="w-28 accent-blue-500" />
+              </div>
+            </div>
+            <div className="flex items-center gap-2" title="Presión (tablet)">
+              <input type="checkbox" checked={pressure} onChange={e=>onPressure(e.target.checked)} />
+              <MousePointer2 size={16} className="opacity-80" />
+            </div>
+            <div className="flex items-center gap-2 opacity-70" title="Preview exacto (siempre activo para Rope)">
+              <input type="checkbox" checked={true} disabled />
+              <span className="text-sm">Preview exacto</span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Global popover (right aligned under bar) */}
       {openGlobal && (

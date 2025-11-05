@@ -1,10 +1,11 @@
 import React, { useState } from 'react'
 import { useEngine } from './EngineContext'
-import { PanelLeftClose, PanelLeftOpen, Palette, SlidersVertical, Droplet, MousePointer2, Square, Plus, X, Sun } from 'lucide-react'
+import { Activity, PanelLeftClose, PanelLeftOpen, Palette, SlidersVertical, Droplet, MousePointer2, Square, Plus, X, Sun } from 'lucide-react'
 
 export const ToolPanel: React.FC = () => {
   const engine = useEngine()
   const [collapsed, setCollapsed] = useState(false)
+  const [activeIsRope, setActiveIsRope] = useState(() => engine.getActiveTool?.() === 'rope')
 
   // Local-ish controls (aplican vía engine de forma global, pero pensadas para la herramienta activa)
   const [size, setSize] = useState(() => engine.getStrokeSize?.() ?? 8)
@@ -13,6 +14,7 @@ export const ToolPanel: React.FC = () => {
   const [blend, setBlend] = useState(() => engine.getBlendMode?.() ?? 'normal')
   const [pressure, setPressure] = useState(() => engine.getPressureSensitivity?.() ?? true)
 
+  const pickRope = () => { engine.setActiveTool?.('rope'); setActiveIsRope(true) }
 
   const onSize = (v:number) => { setSize(v); engine.setStrokeSize?.(v) }
   const onStroke = (hex:string) => { setStrokeHex(hex); const n = parseInt(hex.replace('#',''),16)>>>0; engine.setStrokeColor?.(n) }
@@ -30,6 +32,14 @@ export const ToolPanel: React.FC = () => {
           className="p-1.5 rounded-md text-gray-700 hover:text-gray-900 hover:bg-gray-100 border border-gray-300"
         >
           {collapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+        </button>
+        <button
+          onClick={pickRope}
+          data-active={activeIsRope}
+          title="SimpleRope"
+          className="p-1.5 rounded-md text-gray-700 hover:text-gray-900 hover:bg-gray-100 data-[active=true]:bg-blue-600 data-[active=true]:text-white border border-gray-300"
+        >
+          <Activity size={18} />
         </button>
       </div>
 

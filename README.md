@@ -20,10 +20,6 @@ Este proyecto arranca una app web mínima basada en PixiJS v8 usando Vite y Type
 ## Notas
 El canvas de Pixi se monta dentro de `#app` y adapta su tamaño a la ventana. Edita `src/main.ts` para empezar.
 
-Herramientas:
-- Se han eliminado los elementos de la herramienta "SimpleRope" y su implementación. La herramienta activa por defecto ahora es el lápiz vectorial (vpen).
-- Los controles de la barra superior se enfocan en presets de color/tamaño y ajustes globales.
-
 ## Despliegue en GitHub Pages (GitHub Actions)
 
 - En GitHub: Settings → Pages → Build and deployment → Source = "GitHub Actions".
